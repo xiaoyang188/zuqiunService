@@ -2,7 +2,7 @@
   "name": "zuqiu-server",
   "version": "1.0.0",
   "private": true,
-  "description": "足球赛况轻量后端 — 代理 football-data.org",
+  "description": "足球赛况轻量后端 — 代理 ESPN 公开 API",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",

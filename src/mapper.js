@@ -1,87 +1,166 @@
-const { getLeagueKeyByCode, getLeagueLabel } = require('./leagueCodes');
+const { getLeagueLabel } = require('./leagueCodes');
+const { registerEvent } = require('./espnClient');
 
-const STATUS_MAP = {
-  SCHEDULED: 'NS',
-  TIMED: 'NS',
-  IN_PLAY: 'LIVE',
-  PAUSED: 'HT',
-  EXTRA_TIME: 'LIVE',
-  PENALTY_SHOOTOUT: 'LIVE',
-  FINISHED: 'FT',
-  AWARDED: 'FT',
-  SUSPENDED: 'POSTPONED',
-  POSTPONED: 'POSTPONED',
-  CANCELLED: 'POSTPONED',
+const ESPN_STATUS_MAP = {
+  pre: 'NS',
+  post: 'FT',
 };
 
-function pickScore(match) {
-  const ft = match.score?.fullTime;
-  if (ft && ft.home != null && ft.away != null) {
-    return { home: ft.home, away: ft.away };
+function mapEspnStatus(status) {
+  const state = status?.type?.state;
+  const name = status?.type?.name || '';
+  if (state === 'pre') return 'NS';
+  if (state === 'post') return 'FT';
+  if (state === 'in') {
+    if (/half/i.test(name) || name === 'STATUS_HALFTIME') return 'HT';
+    return 'LIVE';
   }
-  return { home: 0, away: 0 };
+  return ESPN_STATUS_MAP[state] || 'NS';
 }
 
-function mapMatch(raw) {
-  const leagueKey = getLeagueKeyByCode(raw.competition?.code) || raw.competition?.name || '';
-  const { home, away } = pickScore(raw);
+function parseMinute(displayClock) {
+  if (!displayClock) return null;
+  const m = displayClock.match(/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+function teamLogo(team) {
+  return team?.logos?.[0]?.href || team?.logo || '';
+}
+
+function statValue(stats, name) {
+  const item = stats?.find((s) => s.name === name);
+  if (!item) return 0;
+  const v = item.value ?? item.displayValue;
+  const n = Number(String(v).replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function mapEventToMatch(event, leagueKey, leagueSlug) {
+  const comp = event.competitions?.[0];
+  if (!comp) return null;
+
+  const competitors = comp.competitors || [];
+  const home = competitors.find((c) => c.homeAway === 'home');
+  const away = competitors.find((c) => c.homeAway === 'away');
+  if (!home?.team || !away?.team) return null;
+
+  registerEvent(event.id, leagueKey, leagueSlug, comp.id);
+
+  const status = mapEspnStatus(comp.status);
   return {
-    _id: `fd_match_${raw.id}`,
+    _id: `espn_match_${event.id}`,
     league: leagueKey,
-    leagueName: getLeagueLabel(leagueKey) || raw.competition?.name || '',
-    homeTeam: `fd_team_${raw.homeTeam.id}`,
-    awayTeam: `fd_team_${raw.awayTeam.id}`,
-    homeTeamName: raw.homeTeam.shortName || raw.homeTeam.name,
-    awayTeamName: raw.awayTeam.shortName || raw.awayTeam.name,
-    homeTeamLogo: raw.homeTeam.crest || '',
-    awayTeamLogo: raw.awayTeam.crest || '',
-    homeScore: home,
-    awayScore: away,
-    status: STATUS_MAP[raw.status] || 'NS',
-    matchTime: raw.utcDate,
-    minute: raw.minute ?? null,
-    venue: raw.venue || '',
+    leagueName: getLeagueLabel(leagueKey),
+    homeTeam: `espn_team_${home.team.id}`,
+    awayTeam: `espn_team_${away.team.id}`,
+    homeTeamName: home.team.shortDisplayName || home.team.displayName || home.team.name,
+    awayTeamName: away.team.shortDisplayName || away.team.displayName || away.team.name,
+    homeTeamLogo: teamLogo(home.team),
+    awayTeamLogo: teamLogo(away.team),
+    homeScore: Number(home.score) || 0,
+    awayScore: Number(away.score) || 0,
+    status,
+    matchTime: comp.startDate || event.date,
+    minute: status === 'LIVE' || status === 'HT' ? parseMinute(comp.status?.displayClock) : null,
+    venue: comp.venue?.fullName || '',
     stats: null,
   };
 }
 
+function mapScheduleItem({ event, leagueKey, leagueSlug }) {
+  return mapEventToMatch(event, leagueKey, leagueSlug);
+}
+
+function mapSummaryToMatch(summary, leagueKey) {
+  const header = summary.header;
+  const comp = header.competitions?.[0];
+  if (!comp) return null;
+
+  const eventLike = {
+    id: header.id,
+    date: comp.date || header.date,
+    competitions: [comp],
+  };
+  const match = mapEventToMatch(eventLike, leagueKey, getLeagueSlug(leagueKey));
+  if (!match) return null;
+
+  const stats = extractStats(summary, comp);
+  if (stats) match.stats = stats;
+  return match;
+}
+
+function getLeagueSlug(leagueKey) {
+  const { getLeagueByKey } = require('./leagueCodes');
+  return getLeagueByKey(leagueKey)?.slug || '';
+}
+
+function extractStats(summary, comp) {
+  const boxTeams = summary.boxscore?.teams || [];
+  if (boxTeams.length < 2) return null;
+
+  const homeComp = comp.competitors?.find((c) => c.homeAway === 'home');
+  const awayComp = comp.competitors?.find((c) => c.homeAway === 'away');
+  if (!homeComp || !awayComp) return null;
+
+  const homeBox = boxTeams.find((t) => String(t.team?.id) === String(homeComp.team?.id));
+  const awayBox = boxTeams.find((t) => String(t.team?.id) === String(awayComp.team?.id));
+  if (!homeBox || !awayBox) return null;
+
+  const hs = homeBox.statistics || [];
+  const as = awayBox.statistics || [];
+
+  return {
+    possession: { home: statValue(hs, 'possessionPct'), away: statValue(as, 'possessionPct') },
+    shots: { home: statValue(hs, 'totalShots'), away: statValue(as, 'totalShots') },
+    shotsOnTarget: {
+      home: statValue(hs, 'shotsOnTarget'),
+      away: statValue(as, 'shotsOnTarget'),
+    },
+    corners: { home: statValue(hs, 'wonCorners'), away: statValue(as, 'wonCorners') },
+    yellowCards: { home: statValue(hs, 'yellowCards'), away: statValue(as, 'yellowCards') },
+    redCards: { home: statValue(hs, 'redCards'), away: statValue(as, 'redCards') },
+  };
+}
+
 function mapStandingRow(row, leagueKey) {
-  const team = row.team;
+  const { entry, rank } = row;
+  const team = entry.team;
+  const stats = entry.stats || [];
+
   return {
     _id: `standing_${leagueKey}_${team.id}`,
     league: leagueKey,
-    teamId: `fd_team_${team.id}`,
-    teamName: team.shortName || team.name,
-    teamLogo: team.crest || '',
-    rank: row.position,
-    played: row.playedGames,
-    win: row.won,
-    draw: row.draw,
-    lose: row.lost,
-    gf: row.goalsFor,
-    ga: row.goalsAgainst,
-    gd: row.goalDifference,
-    points: row.points,
+    teamId: `espn_team_${team.id}`,
+    teamName: team.shortDisplayName || team.displayName || team.name,
+    teamLogo: teamLogo(team),
+    rank,
+    played: statValue(stats, 'gamesPlayed'),
+    win: statValue(stats, 'wins'),
+    draw: statValue(stats, 'ties'),
+    lose: statValue(stats, 'losses'),
+    gf: statValue(stats, 'pointsFor'),
+    ga: statValue(stats, 'pointsAgainst'),
+    gd: statValue(stats, 'pointDifferential'),
+    points: statValue(stats, 'points'),
   };
 }
 
 function mapScorerRow(row, index) {
-  const player = row.player || {};
-  const team = row.team || {};
   return {
     rank: index + 1,
-    name: player.name || '',
-    team: team.shortName || team.name || '',
+    name: row.name || '',
+    team: row.team || '',
     goals: row.goals ?? 0,
   };
 }
 
 function mapTeam(raw, leagueKey) {
   return {
-    _id: `fd_team_${raw.id}`,
-    name: raw.shortName || raw.name,
-    logo: raw.crest || '',
-    country: raw.area?.name || '',
+    _id: `espn_team_${raw.id}`,
+    name: raw.shortDisplayName || raw.displayName || raw.name,
+    logo: teamLogo(raw),
+    country: raw.location || '',
     league: leagueKey,
   };
 }
@@ -96,4 +175,11 @@ function sortMatches(list) {
   });
 }
 
-module.exports = { mapMatch, mapStandingRow, mapScorerRow, mapTeam, sortMatches };
+module.exports = {
+  mapScheduleItem,
+  mapSummaryToMatch,
+  mapStandingRow,
+  mapScorerRow,
+  mapTeam,
+  sortMatches,
+};
