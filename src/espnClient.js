@@ -134,6 +134,24 @@ async function fetchSchedule(dateRange, leagueKey) {
   return Array.from(map.values());
 }
 
+/** ESPN summary 不校验联赛 slug，用 season.name 反查真实联赛，避免误判 */
+const SEASON_KEYWORDS = [
+  ['World Cup', /world cup/i],
+  ['Champions League', /champions league/i],
+  ['Euro', /european championship|uefa euro/i],
+  ['Premier League', /premier league/i],
+  ['La Liga', /laliga|la liga/i],
+  ['Bundesliga', /bundesliga/i],
+  ['Serie A', /serie a/i],
+  ['Ligue 1', /ligue 1/i],
+];
+
+function correctLeagueBySeason(summary, fallbackKey) {
+  const name = summary?.header?.season?.name || '';
+  const hit = SEASON_KEYWORDS.find(([, re]) => re.test(name));
+  return hit ? hit[0] : fallbackKey;
+}
+
 async function fetchMatchSummary(eventId, leagueKeyHint) {
   let leagueKey = leagueKeyHint;
   let leagueSlug = leagueKeyHint ? getLeagueByKey(leagueKeyHint)?.slug : null;
@@ -144,9 +162,15 @@ async function fetchMatchSummary(eventId, leagueKeyHint) {
     leagueSlug = reg.leagueSlug;
   }
 
+  // 冷启动直接打开详情：World Cup 优先，再其余联赛
   if (!leagueSlug) {
-    for (const key of Object.keys(APP_LEAGUES)) {
-      const slug = APP_LEAGUES[key].slug;
+    const orderedKeys = [
+      ...HOT_LEAGUE_KEYS,
+      ...Object.keys(APP_LEAGUES).filter((k) => !HOT_LEAGUE_KEYS.includes(k)),
+    ];
+    for (const key of orderedKeys) {
+      const slug = APP_LEAGUES[key]?.slug;
+      if (!slug) continue;
       try {
         await siteGet(slug, 'summary', `event=${eventId}`);
         leagueKey = key;
@@ -166,6 +190,10 @@ async function fetchMatchSummary(eventId, leagueKeyHint) {
   if (!summary?.header) {
     throw new Error('比赛不存在');
   }
+
+  // 用赛季名校正联赛归类（遍历命中错 slug 时纠正）
+  leagueKey = correctLeagueBySeason(summary, leagueKey);
+  leagueSlug = getLeagueByKey(leagueKey)?.slug || leagueSlug;
 
   const comp = summary.header.competitions?.[0];
   if (comp) {
