@@ -234,54 +234,266 @@ async function fetchCompetitionTeams(leagueKey) {
   return teams.map((t) => t.team).filter(Boolean);
 }
 
-async function fetchScorersFromPlays(leagueKey, limit = 5) {
+async function fetchFinishedEvents(meta) {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const range90Start = addDays(-90);
+
+  const dateRanges = [
+    `${formatEspnDate(monthStart)}-${formatEspnDate(monthEnd)}`,
+    `${formatEspnDate(range90Start)}-${formatEspnDate(now)}`,
+    '',
+  ];
+
+  let events = [];
+  for (const datesQuery of dateRanges) {
+    try {
+      const batch = await fetchScoreboardEvents(meta.slug, datesQuery);
+      if (batch.length) {
+        events = batch;
+        break;
+      }
+    } catch {
+      /* try next range */
+    }
+  }
+
+  return events
+    .filter((e) => e.competitions?.[0]?.status?.type?.state === 'post')
+    .slice(0, 20);
+}
+
+async function fetchFinishedEventsForForm(meta, limit = 60) {
+  const now = new Date();
+  const range90Start = addDays(-120);
+  const dateRanges = [
+    `${formatEspnDate(range90Start)}-${formatEspnDate(now)}`,
+    '',
+  ];
+
+  let events = [];
+  for (const datesQuery of dateRanges) {
+    try {
+      const batch = await fetchScoreboardEvents(meta.slug, datesQuery);
+      if (batch.length) {
+        events = batch;
+        break;
+      }
+    } catch {
+      /* try next range */
+    }
+  }
+
+  return events
+    .filter((e) => e.competitions?.[0]?.status?.type?.state === 'post')
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+    .slice(0, limit);
+}
+
+function pushTeamForm(map, teamId, result, maxLen = 5) {
+  if (!teamId) return;
+  const list = map.get(teamId) || [];
+  if (list.length >= maxLen) return;
+  list.push(result);
+  map.set(teamId, list);
+}
+
+/** 从近期已结束比赛推算球队近况 W/D/L（docs: site-v2-scoreboard） */
+async function buildTeamFormMap(leagueKey) {
+  const meta = getLeagueByKey(leagueKey);
+  if (!meta) return new Map();
+
+  const finished = await fetchFinishedEventsForForm(meta);
+  const formMap = new Map();
+
+  for (const event of finished) {
+    const comp = event.competitions?.[0];
+    const competitors = comp?.competitors || [];
+    const home = competitors.find((c) => c.homeAway === 'home');
+    const away = competitors.find((c) => c.homeAway === 'away');
+    if (!home?.team?.id || !away?.team?.id) continue;
+
+    const homeId = `espn_team_${home.team.id}`;
+    const awayId = `espn_team_${away.team.id}`;
+    if ((formMap.get(homeId)?.length || 0) >= 5 && (formMap.get(awayId)?.length || 0) >= 5) {
+      continue;
+    }
+
+    const hs = Number(home.score);
+    const as = Number(away.score);
+    if (!Number.isFinite(hs) || !Number.isFinite(as)) continue;
+
+    let homeResult = 'D';
+    let awayResult = 'D';
+    if (hs > as) {
+      homeResult = 'W';
+      awayResult = 'L';
+    } else if (hs < as) {
+      homeResult = 'L';
+      awayResult = 'W';
+    }
+
+    pushTeamForm(formMap, homeId, homeResult);
+    pushTeamForm(formMap, awayId, awayResult);
+  }
+
+  return formMap;
+}
+
+function formatFormStreak(form) {
+  if (!form?.length) return '';
+  const latest = form[0];
+  let count = 1;
+  for (let i = 1; i < form.length; i += 1) {
+    if (form[i] !== latest) break;
+    count += 1;
+  }
+  if (latest === 'W') return `${count}连胜`;
+  if (latest === 'L') return `${count}连败`;
+  if (count > 1) return `${count}连平`;
+  return '1平';
+}
+
+async function fetchKnockoutBracket(leagueKey) {
+  const { CUP_LEAGUES, pickKnockoutDateRange, getRoundSlug, buildBracketRounds } = require('./bracket');
+  if (!CUP_LEAGUES.has(leagueKey)) return [];
   const meta = getLeagueByKey(leagueKey);
   if (!meta) return [];
 
-  let events = [];
+  const header = await siteGet(meta.slug, 'scoreboard');
+  const datesQuery = pickKnockoutDateRange(header?.leagues);
+  if (!datesQuery) return [];
+
+  const events = await fetchScoreboardEvents(meta.slug, datesQuery);
+  const knockout = events.filter((e) => getRoundSlug(e));
+  return buildBracketRounds(knockout, leagueKey);
+}
+
+async function enrichStandingsWithForm(leagueKey, rows) {
   try {
-    events = await fetchScoreboardEvents(meta.slug, '');
+    const formMap = await buildTeamFormMap(leagueKey);
+    return rows.map((row) => {
+      const form = formMap.get(row.teamId) || [];
+      return {
+        ...row,
+        form,
+        formText: formatFormStreak(form),
+      };
+    });
   } catch {
-    return [];
+    return rows.map((row) => ({ ...row, form: [], formText: '' }));
   }
+}
 
-  const finished = events.filter((e) => {
-    const state = e.competitions?.[0]?.status?.type?.state;
-    return state === 'post';
-  }).slice(0, 3);
-
-  const counts = new Map();
-
+async function forEachGoalEvent(meta, finished, handler) {
   for (const event of finished) {
-    const compId = event.competitions?.[0]?.id || event.id;
     try {
-      const plays = await coreGet(
-        `/v2/sports/soccer/leagues/${meta.slug}/events/${event.id}/competitions/${compId}/plays?limit=300`
-      );
-      for (const item of plays?.items || []) {
+      const summary = await siteGet(meta.slug, 'summary', `event=${event.id}`);
+      for (const item of summary?.keyEvents || []) {
         if (!item.scoringPlay) continue;
-        let name = item.shortText || '';
-        name = name.replace(/\s+(Penalty|Goal).*$/i, '').trim();
-        if (!name) {
-          const m = item.text?.match(/\.\s+([^(]+)\s+\(/);
-          name = m?.[1]?.trim() || '';
-        }
-        if (!name) continue;
-        const teamMatch = item.text?.match(/\(([^)]+)\)/);
-        const teamName = teamMatch?.[1] || '';
-        const prev = counts.get(name) || { name, team: teamName, goals: 0 };
-        prev.goals += 1;
-        if (teamName) prev.team = teamName;
-        counts.set(name, prev);
+        handler(item);
       }
     } catch {
       /* skip event */
     }
   }
+}
+
+function extractScorer(item) {
+  const athlete = item.participants?.[0]?.athlete;
+  let name = athlete?.displayName || '';
+  if (!name) {
+    name = (item.shortText || '').replace(/\s+Goal.*$/i, '').trim();
+  }
+  if (!name) return null;
+  const teamName = item.team?.displayName || '';
+  const key = athlete?.id ? String(athlete.id) : name;
+  return { key, name, teamName };
+}
+
+function extractAssister(item) {
+  const athlete = item.participants?.[1]?.athlete;
+  if (athlete?.displayName) {
+    return {
+      key: athlete.id ? String(athlete.id) : athlete.displayName,
+      name: athlete.displayName,
+      teamName: item.team?.displayName || '',
+    };
+  }
+  const m = (item.text || '').match(/Assisted by\s+([^(.\n]+)/i);
+  if (!m) return null;
+  const name = m[1].trim();
+  if (!name) return null;
+  return { key: name, name, teamName: item.team?.displayName || '' };
+}
+
+async function fetchScorersFromPlays(leagueKey, limit = 5) {
+  const meta = getLeagueByKey(leagueKey);
+  if (!meta) return [];
+
+  const finished = await fetchFinishedEvents(meta);
+  const counts = new Map();
+
+  await forEachGoalEvent(meta, finished, (item) => {
+    const scorer = extractScorer(item);
+    if (!scorer) return;
+    const prev = counts.get(scorer.key) || { name: scorer.name, team: scorer.teamName, goals: 0 };
+    prev.goals += 1;
+    if (scorer.teamName) prev.team = scorer.teamName;
+    counts.set(scorer.key, prev);
+  });
 
   return Array.from(counts.values())
     .sort((a, b) => b.goals - a.goals)
     .slice(0, limit);
+}
+
+async function fetchAssistsFromSummaries(leagueKey, limit = 5) {
+  const meta = getLeagueByKey(leagueKey);
+  if (!meta) return [];
+
+  const finished = await fetchFinishedEvents(meta);
+  const counts = new Map();
+
+  await forEachGoalEvent(meta, finished, (item) => {
+    const assister = extractAssister(item);
+    if (!assister) return;
+    const prev = counts.get(assister.key) || {
+      name: assister.name,
+      team: assister.teamName,
+      assists: 0,
+    };
+    prev.assists += 1;
+    if (assister.teamName) prev.team = assister.teamName;
+    counts.set(assister.key, prev);
+  });
+
+  return Array.from(counts.values())
+    .sort((a, b) => b.assists - a.assists)
+    .slice(0, limit);
+}
+
+async function fetchAthleteRaw(athleteId, leagueKey) {
+  const meta = getLeagueByKey(leagueKey);
+  if (!meta?.slug) throw new Error('球员不存在');
+
+  const year = new Date().getFullYear();
+  const years = [year, year - 1, year + 1, 2026, 2024, 2022];
+  const tried = new Set();
+
+  for (const y of years) {
+    if (tried.has(y)) continue;
+    tried.add(y);
+    try {
+      return await coreGet(
+        `/v2/sports/soccer/leagues/${meta.slug}/seasons/${y}/athletes/${athleteId}?lang=en&region=us`
+      );
+    } catch {
+      /* try next season year */
+    }
+  }
+  throw new Error('球员不存在');
 }
 
 module.exports = {
@@ -292,4 +504,8 @@ module.exports = {
   fetchStandingsRaw,
   fetchCompetitionTeams,
   fetchScorersFromPlays,
+  fetchAssistsFromSummaries,
+  fetchAthleteRaw,
+  enrichStandingsWithForm,
+  fetchKnockoutBracket,
 };

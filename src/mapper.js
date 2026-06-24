@@ -1,5 +1,6 @@
 const { getLeagueLabel } = require('./leagueCodes');
 const { registerEvent } = require('./espnClient');
+const { toZhName, toZhCountry, resolveTeamDisplayName, toZhPosition } = require('./zhNames');
 
 const ESPN_STATUS_MAP = {
   pre: 'NS',
@@ -55,8 +56,8 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
     leagueName: getLeagueLabel(leagueKey),
     homeTeam: `espn_team_${home.team.id}`,
     awayTeam: `espn_team_${away.team.id}`,
-    homeTeamName: home.team.shortDisplayName || home.team.displayName || home.team.name,
-    awayTeamName: away.team.shortDisplayName || away.team.displayName || away.team.name,
+    homeTeamName: resolveTeamDisplayName(home.team),
+    awayTeamName: resolveTeamDisplayName(away.team),
     homeTeamLogo: teamLogo(home.team),
     awayTeamLogo: teamLogo(away.team),
     homeAbbr: home.team.abbreviation || '',
@@ -78,7 +79,8 @@ function mapScheduleItem({ event, leagueKey, leagueSlug }) {
 
 function formatVenueDetail(venue) {
   if (!venue) return '';
-  const parts = [venue.fullName, venue.address?.city, venue.address?.country].filter(Boolean);
+  const country = venue.address?.country ? toZhCountry(venue.address.country) : '';
+  const parts = [venue.fullName, venue.address?.city, country].filter(Boolean);
   return parts.join(' · ');
 }
 
@@ -139,7 +141,7 @@ function mapKeyEvents(keyEvents, homeTeamId, homeLogo, awayLogo) {
         eventLabel: mapEventLabel(e),
         description: e.text || e.shortText || '',
         teamLogo: isHome ? homeLogo : awayLogo,
-        teamName: e.team?.displayName || '',
+        teamName: toZhName(e.team?.displayName || ''),
         isGoal: Boolean(e.scoringPlay || type.includes('scored') || type === 'goal'),
         isHome,
         sortValue: e.clock?.value ?? 0,
@@ -164,18 +166,23 @@ function pickHighlight(events) {
 
 function mapRosterPlayer(row) {
   const athlete = row.athlete || {};
+  const pos = row.position?.abbreviation || row.position?.displayName || '';
   return {
+    id: athlete.id ? `espn_player_${athlete.id}` : '',
+    athleteId: athlete.id || '',
     name: athlete.displayName || athlete.fullName || '',
+    shortName: athlete.shortName || '',
     avatar: athlete.jerseyImages?.[0]?.href || athlete.headshot?.href || '',
-    position: row.position?.abbreviation || row.position?.displayName || '',
+    position: toZhPosition(pos),
     number: row.jersey ? `${row.jersey}号` : '',
+    starter: Boolean(row.starter),
   };
 }
 
 function mapLineups(rosters) {
   return (rosters || []).map((side) => ({
     homeAway: side.homeAway,
-    teamName: side.team?.displayName || '',
+    teamName: toZhName(side.team?.displayName || ''),
     teamAbbr: side.team?.abbreviation || '',
     teamLogo: teamLogo(side.team),
     starters: (side.roster || []).filter((r) => r.starter).map(mapRosterPlayer),
@@ -285,16 +292,38 @@ function extractStats(summary, comp) {
   };
 }
 
+function statSummary(stats, name) {
+  const item = stats?.find((s) => s.name === name);
+  return item?.summary || item?.displayValue || '';
+}
+
+const QUAL_NOTE_ZH = {
+  'Champions League': '欧冠区',
+  'Champions League Qualification': '欧冠资格',
+  'Europa League': '欧联区',
+  'Conference League': '欧协联区',
+  'Relegation': '降级区',
+  'Advance to Round of 32': '晋级32强',
+  'Advance to Round of 16': '晋级16强',
+  'Advance to Knockout Stage': '晋级淘汰赛',
+};
+
+function translateQualNote(desc) {
+  if (!desc) return '';
+  return QUAL_NOTE_ZH[desc] || desc;
+}
+
 function mapStandingRow(row, leagueKey) {
   const { entry, rank } = row;
   const team = entry.team;
   const stats = entry.stats || [];
+  const note = entry.note || {};
 
   return {
     _id: `standing_${leagueKey}_${team.id}`,
     league: leagueKey,
     teamId: `espn_team_${team.id}`,
-    teamName: team.shortDisplayName || team.displayName || team.name,
+    teamName: toZhName(team.shortDisplayName || team.displayName || team.name),
     teamLogo: teamLogo(team),
     rank,
     played: statValue(stats, 'gamesPlayed'),
@@ -305,6 +334,11 @@ function mapStandingRow(row, leagueKey) {
     ga: statValue(stats, 'pointsAgainst'),
     gd: statValue(stats, 'pointDifferential'),
     points: statValue(stats, 'points'),
+    groupName: row.groupName || '',
+    qualNote: translateQualNote(note.description || ''),
+    qualColor: note.color || '',
+    rankChange: statValue(stats, 'rankChange'),
+    overallRecord: statSummary(stats, 'overall'),
   };
 }
 
@@ -312,17 +346,26 @@ function mapScorerRow(row, index) {
   return {
     rank: index + 1,
     name: row.name || '',
-    team: row.team || '',
+    team: toZhName(row.team || ''),
     goals: row.goals ?? 0,
+  };
+}
+
+function mapAssistRow(row, index) {
+  return {
+    rank: index + 1,
+    name: row.name || '',
+    team: toZhName(row.team || ''),
+    assists: row.assists ?? 0,
   };
 }
 
 function mapTeam(raw, leagueKey) {
   return {
     _id: `espn_team_${raw.id}`,
-    name: raw.shortDisplayName || raw.displayName || raw.name,
+    name: resolveTeamDisplayName(raw),
     logo: teamLogo(raw),
-    country: raw.location || '',
+    country: toZhCountry(raw.location || ''),
     league: leagueKey,
   };
 }
@@ -337,11 +380,46 @@ function sortMatches(list) {
   });
 }
 
+function inchesToCm(inches) {
+  const n = Number(inches);
+  return Number.isFinite(n) && n > 0 ? `${Math.round(n * 2.54)} cm` : '';
+}
+
+function lbsToKg(lbs) {
+  const n = Number(lbs);
+  return Number.isFinite(n) && n > 0 ? `${Math.round(n * 0.453592)} kg` : '';
+}
+
+function mapAthleteDetail(raw, leagueKey) {
+  if (!raw?.id) return null;
+  const pos = raw.position?.abbreviation || raw.position?.displayName || raw.position?.name || '';
+  return {
+    _id: `espn_player_${raw.id}`,
+    athleteId: String(raw.id),
+    name: raw.displayName || raw.fullName || '',
+    shortName: raw.shortName || '',
+    avatar: raw.headshot?.href || raw.flag?.href || '',
+    jerseyImage: raw.jerseyImages?.[0]?.href || '',
+    teamName: '',
+    teamLogo: raw.flag?.href || '',
+    position: toZhPosition(pos),
+    number: raw.jersey ? `${raw.jersey}号` : '',
+    age: raw.age ?? null,
+    height: raw.height ? inchesToCm(raw.height) : raw.displayHeight || '',
+    weight: raw.weight ? lbsToKg(raw.weight) : raw.displayWeight || '',
+    nationality: toZhCountry(raw.citizenship || ''),
+    birthDate: raw.dateOfBirth ? raw.dateOfBirth.slice(0, 10) : '',
+    league: leagueKey,
+  };
+}
+
 module.exports = {
   mapScheduleItem,
   mapSummaryToMatch,
   mapStandingRow,
   mapScorerRow,
+  mapAssistRow,
   mapTeam,
+  mapAthleteDetail,
   sortMatches,
 };
