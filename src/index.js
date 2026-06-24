@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { cached } = require('./cache');
+const { cached, cachedStale } = require('./cache');
 const { isDbEnabled } = require('./db');
 const { APP_LEAGUES, buildLeagues } = require('./leagueCodes');
 const dataService = require('./dataService');
@@ -25,9 +25,27 @@ function parseMatchId(raw) {
   return String(raw).replace(/^(espn_match_|fd_match_)/, '');
 }
 
-async function withCache(key, ttlMs, fetcher) {
-  if (isDbEnabled()) return fetcher();
-  return cached(key, ttlMs, fetcher);
+/** 读库/读 ESPN 均走短期缓存；week 用 stale-while-revalidate 避免冷启动 20s+ */
+const TTL = {
+  today: 30_000,
+  tomorrow: 60_000,
+  week: 120_000,
+  weekStale: 15 * 60_000,
+  match: 30_000,
+  standings: 120_000,
+  bracket: 120_000,
+  scorers: 120_000,
+  teams: 300_000,
+  player: 600_000,
+};
+
+function cacheSchedule(dateRange, league, fetcher) {
+  const key = `schedule:${dateRange}:${league || ''}`;
+  if (dateRange === 'week') {
+    return cachedStale(key, TTL.week, TTL.weekStale, fetcher);
+  }
+  const ttl = dateRange === 'tomorrow' ? TTL.tomorrow : TTL.today;
+  return cached(key, ttl, fetcher);
 }
 
 app.get('/api/health', async (_req, res) => {
@@ -51,7 +69,7 @@ app.get('/api/leagues', (req, res) => {
 
 app.get('/api/matches/today', async (_req, res) => {
   try {
-    const matches = await withCache('matches:today', 45_000, () =>
+    const matches = await cached('matches:today', TTL.today, () =>
       dataService.getTodayMatches()
     );
     res.json(ok(matches));
@@ -68,8 +86,7 @@ app.get('/api/schedule', async (req, res) => {
     return;
   }
   try {
-    const key = `schedule:${dateRange}:${league}`;
-    const matches = await withCache(key, 45_000, () =>
+    const matches = await cacheSchedule(dateRange, league, () =>
       dataService.getSchedule(dateRange, league || undefined)
     );
     res.json(ok(matches));
@@ -87,7 +104,7 @@ app.get('/api/matches/:id', async (req, res) => {
   }
   try {
     const key = `match:${eventId}:${leagueHint || 'auto'}`;
-    const match = await withCache(key, 30_000, () =>
+    const match = await cached(key, TTL.match, () =>
       dataService.getMatchDetail(eventId, leagueHint || undefined)
     );
     res.json(ok(match));
@@ -104,7 +121,7 @@ app.get('/api/standings/:league', async (req, res) => {
   }
   try {
     const key = `standings:${league}`;
-    const rows = await withCache(key, 300_000, () => dataService.getStandings(league));
+    const rows = await cached(key, TTL.standings, () => dataService.getStandings(league));
     res.json(ok(rows));
   } catch (e) {
     res.status(500).json(fail(e.message || '获取积分榜失败'));
@@ -119,7 +136,7 @@ app.get('/api/bracket/:league', async (req, res) => {
   }
   try {
     const key = `bracket:${league}`;
-    const rounds = await withCache(key, 300_000, () => dataService.getBracket(league));
+    const rounds = await cached(key, TTL.bracket, () => dataService.getBracket(league));
     res.json(ok(rounds));
   } catch (e) {
     res.status(500).json(fail(e.message || '获取淘汰赛对阵失败'));
@@ -135,7 +152,7 @@ app.get('/api/scorers/:league', async (req, res) => {
   }
   try {
     const key = `scorers:${league}:${limit}`;
-    const rows = await withCache(key, 300_000, () =>
+    const rows = await cached(key, TTL.scorers, () =>
       dataService.getScorers(league, limit)
     );
     res.json(ok(rows));
@@ -153,7 +170,7 @@ app.get('/api/assists/:league', async (req, res) => {
   }
   try {
     const key = `assists:${league}:${limit}`;
-    const rows = await withCache(key, 300_000, () =>
+    const rows = await cached(key, TTL.scorers, () =>
       dataService.getAssists(league, limit)
     );
     res.json(ok(rows));
@@ -171,7 +188,7 @@ app.get('/api/teams', async (req, res) => {
   }
   try {
     const key = `teams:${league}:${keyword}`;
-    let teams = await withCache(key, 600_000, () =>
+    let teams = await cached(key, TTL.teams, () =>
       dataService.getTeams(league, keyword || undefined)
     );
     res.json(ok(teams));
@@ -197,7 +214,7 @@ app.get('/api/players/:id', async (req, res) => {
   }
   try {
     const key = `player:${athleteId}:${league}`;
-    const player = await withCache(key, 600_000, () =>
+    const player = await cached(key, TTL.player, () =>
       dataService.getPlayerDetail(athleteId, league)
     );
     res.json(ok(player));
