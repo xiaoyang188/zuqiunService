@@ -66,6 +66,22 @@ CREATE TABLE IF NOT EXISTS brackets (
   synced_at    DATETIME     NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS player_rankings (
+  league_key   VARCHAR(64)  NOT NULL COMMENT '联赛 key',
+  kind         VARCHAR(16)  NOT NULL COMMENT 'scorers | assists',
+  payload      JSON         NOT NULL COMMENT '射手/助攻榜 JSON 数组',
+  synced_at    DATETIME     NOT NULL,
+  PRIMARY KEY (league_key, kind)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS players (
+  external_id  VARCHAR(32)  NOT NULL COMMENT 'ESPN athlete id',
+  league_key   VARCHAR(64)  NOT NULL,
+  payload      JSON         NOT NULL COMMENT '球员详情 JSON',
+  synced_at    DATETIME     NOT NULL,
+  PRIMARY KEY (external_id, league_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS sync_log (
   id           BIGINT AUTO_INCREMENT PRIMARY KEY,
   job_name     VARCHAR(64)  NOT NULL,

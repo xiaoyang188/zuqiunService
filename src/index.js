@@ -208,6 +208,11 @@ app.get('/api/players/:id', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`足球赛况 API  http://127.0.0.1:${PORT}`);
-  console.log(`数据源: ESPN | 存储: ${isDbEnabled() ? 'MySQL' : '内存缓存'}`);
+  if (isDbEnabled()) {
+    console.log('读库模式: API 仅查 MySQL，ESPN 由定时同步写入');
+  } else {
+    console.warn('⚠️  USE_DATABASE 未启用：API 将实时代理 ESPN（仅适合本地调试）');
+    console.warn('    生产环境请在 .env 配置 USE_DATABASE=true 并执行 npm run db:init && npm run sync:once');
+  }
   startScheduler();
 });

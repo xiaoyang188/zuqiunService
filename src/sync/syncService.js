@@ -5,12 +5,17 @@ const {
   mapSummaryToMatch,
   mapStandingRow,
   mapTeam,
+  mapScorerRow,
+  mapAssistRow,
+  mapAthleteDetail,
   sortMatches,
 } = require('../mapper');
 const matchRepo = require('../repositories/matchRepo');
 const standingRepo = require('../repositories/standingRepo');
 const bracketRepo = require('../repositories/bracketRepo');
 const teamRepo = require('../repositories/teamRepo');
+const playerRankingRepo = require('../repositories/playerRankingRepo');
+const playerRepo = require('../repositories/playerRepo');
 const { writeSyncLog } = require('../repositories/syncLogRepo');
 const { isDbEnabled } = require('../db');
 const { shanghaiDayStart } = require('../dateRange');
@@ -24,6 +29,7 @@ let syncing = {
   live: false,
   standings: false,
   teams: false,
+  playerStats: false,
 };
 
 async function runJob(name, fn) {
@@ -130,6 +136,66 @@ async function syncStandingsOnce() {
   }
 }
 
+async function cacheAthleteProfiles(leagueKey, athleteIds) {
+  const unique = [...new Set(athleteIds.filter((id) => /^\d+$/.test(String(id))))];
+  let cached = 0;
+  for (const id of unique.slice(0, 30)) {
+    try {
+      const raw = await espn.fetchAthleteRaw(id, leagueKey);
+      const mapped = mapAthleteDetail(raw, leagueKey);
+      if (mapped) {
+        await playerRepo.upsertPlayer(id, leagueKey, mapped);
+        cached += 1;
+      }
+    } catch {
+      /* skip athlete */
+    }
+  }
+  return cached;
+}
+
+async function syncLeaguePlayerStats(leagueKey) {
+  const syncLimit = 20;
+  const athleteIds = [];
+
+  const scorerRaw = await espn.fetchScorersFromPlays(leagueKey, syncLimit);
+  const scorers = scorerRaw.map((row, i) => mapScorerRow(row, i));
+  await playerRankingRepo.replaceRankings(leagueKey, 'scorers', scorers);
+  scorerRaw.forEach((row) => {
+    if (/^\d+$/.test(String(row.key))) athleteIds.push(String(row.key));
+  });
+
+  const assistRaw = await espn.fetchAssistsFromSummaries(leagueKey, syncLimit);
+  const assists = assistRaw.map((row, i) => mapAssistRow(row, i));
+  await playerRankingRepo.replaceRankings(leagueKey, 'assists', assists);
+  assistRaw.forEach((row) => {
+    if (/^\d+$/.test(String(row.key))) athleteIds.push(String(row.key));
+  });
+
+  await cacheAthleteProfiles(leagueKey, athleteIds);
+  return scorers.length + assists.length;
+}
+
+async function syncPlayerStatsOnce() {
+  if (syncing.playerStats) return { skipped: true };
+  syncing.playerStats = true;
+  try {
+    return await runJob('syncPlayerStats', async () => {
+      let total = 0;
+      for (const leagueKey of ALL_LEAGUE_KEYS) {
+        try {
+          total += await syncLeaguePlayerStats(leagueKey);
+        } catch {
+          /* league may be off-season */
+        }
+      }
+      return total;
+    });
+  } finally {
+    syncing.playerStats = false;
+  }
+}
+
 async function syncTeamsOnce() {
   if (syncing.teams) return { skipped: true };
   syncing.teams = true;
@@ -165,14 +231,16 @@ async function syncAllOnce() {
   const schedule = await syncScheduleOnce();
   const live = await syncLiveOnce();
   const standings = await syncStandingsOnce();
+  const playerStats = await syncPlayerStatsOnce();
   const teams = await syncTeamsOnce();
-  return { schedule, live, standings, teams };
+  return { schedule, live, standings, playerStats, teams };
 }
 
 module.exports = {
   syncScheduleOnce,
   syncLiveOnce,
   syncStandingsOnce,
+  syncPlayerStatsOnce,
   syncTeamsOnce,
   syncMatchDetail,
   syncAllOnce,

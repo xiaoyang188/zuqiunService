@@ -3,6 +3,7 @@ const {
   syncScheduleOnce,
   syncLiveOnce,
   syncStandingsOnce,
+  syncPlayerStatsOnce,
   syncTeamsOnce,
   syncAllOnce,
 } = require('./syncService');
@@ -18,6 +19,7 @@ function startScheduler() {
   const scheduleMs = Number(process.env.SYNC_SCHEDULE_MS) || 5 * 60 * 1000;
   const liveMs = Number(process.env.SYNC_LIVE_MS) || 45 * 1000;
   const standingsMs = Number(process.env.SYNC_STANDINGS_MS) || 6 * 60 * 60 * 1000;
+  const playerStatsMs = Number(process.env.SYNC_PLAYER_STATS_MS) || standingsMs;
   const teamsMs = Number(process.env.SYNC_TEAMS_MS) || 24 * 60 * 60 * 1000;
 
   console.log('[sync] 启动定时同步');
@@ -29,6 +31,7 @@ function startScheduler() {
   timers.push(setInterval(() => syncScheduleOnce(), scheduleMs));
   timers.push(setInterval(() => syncLiveOnce(), liveMs));
   timers.push(setInterval(() => syncStandingsOnce(), standingsMs));
+  timers.push(setInterval(() => syncPlayerStatsOnce(), playerStatsMs));
   timers.push(setInterval(() => syncTeamsOnce(), teamsMs));
 }
 
