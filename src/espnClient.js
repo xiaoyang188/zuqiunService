@@ -4,6 +4,7 @@ const {
   HOT_LEAGUE_KEYS,
   getLeagueByKey,
 } = require('./leagueCodes');
+const { shanghaiEspnDate } = require('./dateRange');
 
 const SITE_HOST = 'site.api.espn.com';
 const CORE_HOST = 'sports.core.api.espn.com';
@@ -113,19 +114,18 @@ async function fetchScoreboardEvents(slug, datesQuery) {
 async function fetchSchedule(dateRange, leagueKey) {
   const leagues = leaguesToFetch(leagueKey);
   let datesQuery = '';
-  if (dateRange === 'tomorrow') {
-    datesQuery = formatEspnDate(addDays(1));
+  if (dateRange === 'today') {
+    datesQuery = shanghaiEspnDate(0);
+  } else if (dateRange === 'tomorrow') {
+    datesQuery = shanghaiEspnDate(1);
   } else if (dateRange === 'week') {
-    datesQuery = `${formatEspnDate(new Date())}-${formatEspnDate(addDays(7))}`;
+    datesQuery = `${shanghaiEspnDate(0)}-${shanghaiEspnDate(7)}`;
   }
 
   const batches = await Promise.all(
     leagues.map(async ({ key, slug }) => {
       try {
-        const events = await fetchScoreboardEvents(
-          slug,
-          dateRange === 'today' ? '' : datesQuery
-        );
+        const events = await fetchScoreboardEvents(slug, datesQuery);
         return events.map((event) => ({
           event,
           leagueKey: key,

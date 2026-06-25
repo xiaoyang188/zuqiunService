@@ -18,6 +18,13 @@ function shanghaiDayStart(dayOffset = 0) {
   return new Date(`${year}-${month}-${day}T00:00:00+08:00`);
 }
 
+/** ESPN scoreboard dates 参数：上海时区 YYYYMMDD */
+function shanghaiEspnDate(dayOffset = 0) {
+  const base = new Date(Date.now() + dayOffset * 86400000);
+  const { year, month, day } = shanghaiParts(base);
+  return `${year}${month}${day}`;
+}
+
 function getDateRangeBounds(dateRange) {
   const todayStart = shanghaiDayStart(0);
   if (dateRange === 'today') {
@@ -38,4 +45,4 @@ function toMysqlDatetime(date) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-module.exports = { getDateRangeBounds, toMysqlDatetime, shanghaiDayStart };
+module.exports = { getDateRangeBounds, toMysqlDatetime, shanghaiDayStart, shanghaiEspnDate };

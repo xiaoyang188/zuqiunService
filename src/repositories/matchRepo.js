@@ -122,14 +122,15 @@ async function pruneMissingInRanges(dateRanges, syncedExternalIds) {
   for (const dateRange of dateRanges) {
     const { start, end } = getDateRangeBounds(dateRange);
     const [rows] = await pool.execute(
-      `SELECT external_id FROM matches WHERE match_time >= ? AND match_time < ?`,
+      `SELECT external_id, status FROM matches WHERE match_time >= ? AND match_time < ?`,
       [toMysqlDatetime(start), toMysqlDatetime(end)]
     );
     for (const row of rows) {
-      if (!keep.has(String(row.external_id))) {
-        await pool.execute(`DELETE FROM matches WHERE external_id = ?`, [row.external_id]);
-        removed += 1;
-      }
+      if (keep.has(String(row.external_id))) continue;
+      // 已结束场次 ESPN 后续 scoreboard 常不再返回，不能因缺步就删库
+      if (row.status === 'FT') continue;
+      await pool.execute(`DELETE FROM matches WHERE external_id = ?`, [row.external_id]);
+      removed += 1;
     }
   }
   return removed;
