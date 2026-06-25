@@ -4,6 +4,7 @@ const {
   syncLiveOnce,
   syncStandingsOnce,
   syncPlayerStatsOnce,
+  syncMatchDetailsOnce,
   syncTeamsOnce,
   syncAllOnce,
 } = require('./syncService');
@@ -30,6 +31,7 @@ function startScheduler() {
 
   timers.push(setInterval(() => syncScheduleOnce(), scheduleMs));
   timers.push(setInterval(() => syncLiveOnce(), liveMs));
+  timers.push(setInterval(() => syncMatchDetailsOnce(), scheduleMs));
   timers.push(setInterval(() => syncStandingsOnce(), standingsMs));
   timers.push(setInterval(() => syncPlayerStatsOnce(), playerStatsMs));
   timers.push(setInterval(() => syncTeamsOnce(), teamsMs));

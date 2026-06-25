@@ -30,6 +30,7 @@ let syncing = {
   standings: false,
   teams: false,
   playerStats: false,
+  details: false,
 };
 
 async function runJob(name, fn) {
@@ -219,6 +220,28 @@ async function syncTeamsOnce() {
   }
 }
 
+async function syncMatchDetailsOnce() {
+  if (syncing.details) return { skipped: true };
+  syncing.details = true;
+  try {
+    return await runJob('syncMatchDetails', async () => {
+      const rows = await matchRepo.findNeedingDetailEnrich(12);
+      let enriched = 0;
+      for (const row of rows) {
+        try {
+          await syncMatchDetail(row.external_id, row.league_key);
+          enriched += 1;
+        } catch {
+          /* skip single match */
+        }
+      }
+      return enriched;
+    });
+  } finally {
+    syncing.details = false;
+  }
+}
+
 async function syncMatchDetail(eventId, leagueHint) {
   const { summary, leagueKey } = await espn.fetchMatchSummary(eventId, leagueHint);
   const mapped = mapSummaryToMatch(summary, leagueKey);
@@ -230,10 +253,11 @@ async function syncMatchDetail(eventId, leagueHint) {
 async function syncAllOnce() {
   const schedule = await syncScheduleOnce();
   const live = await syncLiveOnce();
+  const details = await syncMatchDetailsOnce();
   const standings = await syncStandingsOnce();
   const playerStats = await syncPlayerStatsOnce();
   const teams = await syncTeamsOnce();
-  return { schedule, live, standings, playerStats, teams };
+  return { schedule, live, details, standings, playerStats, teams };
 }
 
 module.exports = {
@@ -241,6 +265,7 @@ module.exports = {
   syncLiveOnce,
   syncStandingsOnce,
   syncPlayerStatsOnce,
+  syncMatchDetailsOnce,
   syncTeamsOnce,
   syncMatchDetail,
   syncAllOnce,

@@ -9,6 +9,14 @@ const SITE_HOST = 'site.api.espn.com';
 const CORE_HOST = 'sports.core.api.espn.com';
 const USER_AGENT = 'zuqiu-server/1.0';
 
+/** 复用 TLS 连接，减少并发 scoreboard 请求的握手耗时 */
+const keepAliveAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 24,
+  maxFreeSockets: 12,
+  timeout: 20_000,
+});
+
 /** eventId -> { leagueKey, leagueSlug, competitionId } */
 const matchRegistry = new Map();
 
@@ -19,9 +27,11 @@ function request(hostname, path) {
         hostname,
         path,
         method: 'GET',
+        agent: keepAliveAgent,
         headers: {
           Accept: 'application/json',
           'User-Agent': USER_AGENT,
+          Connection: 'keep-alive',
         },
       },
       (res) => {

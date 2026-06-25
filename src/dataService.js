@@ -54,7 +54,8 @@ async function getStandings(leagueKey) {
   }
   const table = await espn.fetchStandingsRaw(leagueKey);
   const mapped = table.map((row) => mapStandingRow(row, leagueKey));
-  return espn.enrichStandingsWithForm(leagueKey, mapped);
+  // API 层不算近况（需额外拉 scoreboard，+2～4s）；近况由 syncStandings 写入库
+  return mapped;
 }
 
 async function getBracket(leagueKey) {

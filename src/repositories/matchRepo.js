@@ -89,6 +89,30 @@ async function countMatches() {
   return row.cnt;
 }
 
+/** 今日/明日且缺少 stats/事件/阵容 的比赛，供后台补全详情 */
+async function findNeedingDetailEnrich(limit = 15) {
+  const pool = getPool();
+  const [rows] = await pool.execute(
+    `SELECT external_id, league_key, payload, status, match_time
+     FROM matches
+     WHERE match_time >= CURDATE()
+       AND match_time < DATE_ADD(CURDATE(), INTERVAL 2 DAY)
+     ORDER BY FIELD(status, 'LIVE', 'HT', 'NS', 'FT'), match_time ASC
+     LIMIT 60`
+  );
+  const need = [];
+  for (const row of rows) {
+    if (need.length >= limit) break;
+    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    const hasDetail =
+      Boolean(payload?.stats) ||
+      (payload?.events?.length ?? 0) > 0 ||
+      (payload?.lineups?.length ?? 0) > 0;
+    if (!hasDetail) need.push(row);
+  }
+  return need;
+}
+
 /** 删除同步窗口内已不在 ESPN 返回列表中的比赛（避免残留旧赛程） */
 async function pruneMissingInRanges(dateRanges, syncedExternalIds) {
   const pool = getPool();
@@ -129,6 +153,7 @@ module.exports = {
   findByExternalId,
   findLiveMatches,
   countMatches,
+  findNeedingDetailEnrich,
   pruneMissingInRanges,
   pruneFinishedBefore,
   parseExternalId,

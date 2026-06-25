@@ -6,6 +6,7 @@ const { isDbEnabled } = require('./db');
 const { APP_LEAGUES, buildLeagues } = require('./leagueCodes');
 const dataService = require('./dataService');
 const { startScheduler } = require('./sync/scheduler');
+const { startWarmup, TTL: WARMUP_TTL } = require('./warmup');
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
@@ -25,18 +26,23 @@ function parseMatchId(raw) {
   return String(raw).replace(/^(espn_match_|fd_match_)/, '');
 }
 
-/** 读库/读 ESPN 均走短期缓存；week 用 stale-while-revalidate 避免冷启动 20s+ */
+/** stale-while-revalidate：热数据 TTL 内直返；过期先返旧值并后台刷新，避免冷启动 3～20s */
 const TTL = {
-  today: 30_000,
-  tomorrow: 60_000,
-  week: 120_000,
-  weekStale: 15 * 60_000,
-  match: 30_000,
-  standings: 120_000,
-  bracket: 120_000,
-  scorers: 120_000,
-  teams: 300_000,
+  today: WARMUP_TTL.today,
+  todayStale: WARMUP_TTL.todayStale,
+  tomorrow: 90_000,
+  week: WARMUP_TTL.week,
+  weekStale: WARMUP_TTL.weekStale,
+  standings: WARMUP_TTL.standings,
+  standingsStale: WARMUP_TTL.standingsStale,
+  match: 45_000,
+  matchStale: 5 * 60_000,
+  bracket: 300_000,
+  bracketStale: 30 * 60_000,
+  scorers: 300_000,
+  teams: 600_000,
   player: 600_000,
+  health: 10_000,
 };
 
 function cacheSchedule(dateRange, league, fetcher) {
@@ -44,13 +50,20 @@ function cacheSchedule(dateRange, league, fetcher) {
   if (dateRange === 'week') {
     return cachedStale(key, TTL.week, TTL.weekStale, fetcher);
   }
+  if (dateRange === 'today' && !league) {
+    return cachedStale(key, TTL.today, TTL.todayStale, fetcher);
+  }
   const ttl = dateRange === 'tomorrow' ? TTL.tomorrow : TTL.today;
   return cached(key, ttl, fetcher);
 }
 
+function cacheStandings(league, fetcher) {
+  return cachedStale(`standings:${league}`, TTL.standings, TTL.standingsStale, fetcher);
+}
+
 app.get('/api/health', async (_req, res) => {
   try {
-    const extra = await dataService.getHealthExtra();
+    const extra = await cached('health:extra', TTL.health, () => dataService.getHealthExtra());
     res.json(ok({ status: 'up', ...extra }));
   } catch (e) {
     res.status(500).json(fail(e.message || 'health check failed'));
@@ -67,11 +80,10 @@ app.get('/api/leagues', (req, res) => {
   res.json(ok(buildLeagues(scope)));
 });
 
+/** 与 schedule?dateRange=today 共用缓存 */
 app.get('/api/matches/today', async (_req, res) => {
   try {
-    const matches = await cached('matches:today', TTL.today, () =>
-      dataService.getTodayMatches()
-    );
+    const matches = await cacheSchedule('today', '', () => dataService.getSchedule('today'));
     res.json(ok(matches));
   } catch (e) {
     res.status(500).json(fail(e.message || '获取今日比赛失败'));
@@ -104,7 +116,7 @@ app.get('/api/matches/:id', async (req, res) => {
   }
   try {
     const key = `match:${eventId}:${leagueHint || 'auto'}`;
-    const match = await cached(key, TTL.match, () =>
+    const match = await cachedStale(key, TTL.match, TTL.matchStale, () =>
       dataService.getMatchDetail(eventId, leagueHint || undefined)
     );
     res.json(ok(match));
@@ -120,8 +132,7 @@ app.get('/api/standings/:league', async (req, res) => {
     return;
   }
   try {
-    const key = `standings:${league}`;
-    const rows = await cached(key, TTL.standings, () => dataService.getStandings(league));
+    const rows = await cacheStandings(league, () => dataService.getStandings(league));
     res.json(ok(rows));
   } catch (e) {
     res.status(500).json(fail(e.message || '获取积分榜失败'));
@@ -136,7 +147,9 @@ app.get('/api/bracket/:league', async (req, res) => {
   }
   try {
     const key = `bracket:${league}`;
-    const rounds = await cached(key, TTL.bracket, () => dataService.getBracket(league));
+    const rounds = await cachedStale(key, TTL.bracket, TTL.bracketStale, () =>
+      dataService.getBracket(league)
+    );
     res.json(ok(rounds));
   } catch (e) {
     res.status(500).json(fail(e.message || '获取淘汰赛对阵失败'));
@@ -152,9 +165,7 @@ app.get('/api/scorers/:league', async (req, res) => {
   }
   try {
     const key = `scorers:${league}:${limit}`;
-    const rows = await cached(key, TTL.scorers, () =>
-      dataService.getScorers(league, limit)
-    );
+    const rows = await cached(key, TTL.scorers, () => dataService.getScorers(league, limit));
     res.json(ok(rows));
   } catch (e) {
     res.status(500).json(fail(e.message || '获取射手榜失败'));
@@ -170,9 +181,7 @@ app.get('/api/assists/:league', async (req, res) => {
   }
   try {
     const key = `assists:${league}:${limit}`;
-    const rows = await cached(key, TTL.scorers, () =>
-      dataService.getAssists(league, limit)
-    );
+    const rows = await cached(key, TTL.scorers, () => dataService.getAssists(league, limit));
     res.json(ok(rows));
   } catch (e) {
     res.status(500).json(fail(e.message || '获取助攻榜失败'));
@@ -188,7 +197,7 @@ app.get('/api/teams', async (req, res) => {
   }
   try {
     const key = `teams:${league}:${keyword}`;
-    let teams = await cached(key, TTL.teams, () =>
+    const teams = await cached(key, TTL.teams, () =>
       dataService.getTeams(league, keyword || undefined)
     );
     res.json(ok(teams));
@@ -230,6 +239,7 @@ app.listen(PORT, () => {
   } else {
     console.warn('⚠️  USE_DATABASE 未启用：API 将实时代理 ESPN（仅适合本地调试）');
     console.warn('    生产环境请在 .env 配置 USE_DATABASE=true 并执行 npm run db:init && npm run sync:once');
+    startWarmup();
   }
   startScheduler();
 });
