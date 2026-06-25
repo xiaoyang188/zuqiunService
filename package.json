@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "db:init": "node src/scripts/init-db.js",
+    "db:migrate:reminder": "node src/scripts/migrate-reminder.js",
     "sync:once": "node src/scripts/sync-once.js",
     "reminder:once": "node src/scripts/send-reminder-once.js"
   },

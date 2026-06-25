@@ -9,12 +9,12 @@ async function main() {
   }
 
   await pingDb();
-  const count = await runSqlFile('schema.sql');
-  console.log(`✅ 数据库表结构初始化完成（${count} 条语句）`);
+  const count = await runSqlFile('migration-user-reminder.sql');
+  console.log(`✅ 用户/提醒表迁移完成（${count} 条语句）`);
   await closeDb();
 }
 
 main().catch((e) => {
-  console.error('❌ 初始化失败:', e.message);
+  console.error('❌ 迁移失败:', e.message);
   process.exit(1);
 });
