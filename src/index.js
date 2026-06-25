@@ -7,12 +7,16 @@ const { APP_LEAGUES, buildLeagues } = require('./leagueCodes');
 const dataService = require('./dataService');
 const { startScheduler } = require('./sync/scheduler');
 const { startWarmup, TTL: WARMUP_TTL } = require('./warmup');
+const userRoutes = require('./routes/userRoutes');
+const { isWechatConfigured, getReminderTemplateId } = require('./wechat/wechatService');
 
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+app.use('/api', userRoutes);
 
 function ok(data) {
   return { code: 0, data, message: 'ok' };
@@ -64,7 +68,14 @@ function cacheStandings(league, fetcher) {
 app.get('/api/health', async (_req, res) => {
   try {
     const extra = await cached('health:extra', TTL.health, () => dataService.getHealthExtra());
-    res.json(ok({ status: 'up', ...extra }));
+    res.json(
+      ok({
+        status: 'up',
+        ...extra,
+        wechat: isWechatConfigured(),
+        reminderTemplate: Boolean(getReminderTemplateId()),
+      })
+    );
   } catch (e) {
     res.status(500).json(fail(e.message || 'health check failed'));
   }

@@ -146,6 +146,30 @@ async function pruneFinishedBefore(beforeDate) {
   return result.affectedRows || 0;
 }
 
+/**
+ * 查找应在本轮扫描窗口内发送提醒的比赛。
+ * remindAt = match_time - advanceMinutes，当 remindAt ∈ (now - scanWindow, now] 时触发。
+ */
+async function findDueForReminder(teamFullId, advanceMinutes, scanMinutes) {
+  const pool = getPool();
+  const upperOffset = advanceMinutes;
+  const lowerOffset = Math.max(0, advanceMinutes - scanMinutes);
+  const [rows] = await pool.execute(
+    `SELECT external_id, match_time, payload, status
+     FROM matches
+     WHERE status = 'NS'
+       AND match_time <= DATE_ADD(NOW(), INTERVAL ? MINUTE)
+       AND match_time > DATE_ADD(NOW(), INTERVAL ? MINUTE)
+       AND (
+         JSON_UNQUOTE(JSON_EXTRACT(payload, '$.homeTeam')) = ?
+         OR JSON_UNQUOTE(JSON_EXTRACT(payload, '$.awayTeam')) = ?
+       )
+     ORDER BY match_time ASC`,
+    [upperOffset, lowerOffset, teamFullId, teamFullId]
+  );
+  return rows;
+}
+
 module.exports = {
   upsertMatch,
   upsertMatches,
@@ -157,6 +181,7 @@ module.exports = {
   findNeedingDetailEnrich,
   pruneMissingInRanges,
   pruneFinishedBefore,
+  findDueForReminder,
   parseExternalId,
   rowToMatch,
 };
