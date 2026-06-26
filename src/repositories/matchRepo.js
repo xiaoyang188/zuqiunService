@@ -5,6 +5,7 @@ const {
   toMysqlDatetime,
   scheduleDayForRange,
   scheduleDayBoundsForRange,
+  scheduleDayFromInstant,
   getMatchTimeFallbackBounds,
 } = require('../dateRange');
 
@@ -24,6 +25,9 @@ async function upsertMatch(match) {
   const existingRow = await findByExternalId(externalId);
   const existing = existingRow ? rowToMatch(existingRow) : null;
   const merged = mergeMatchData(existing, match);
+  if (!merged.scheduleDay && merged.matchTime) {
+    merged.scheduleDay = scheduleDayFromInstant(merged.matchTime);
+  }
   const matchTime = toMysqlDatetime(merged.matchTime);
 
   await pool.execute(
@@ -66,10 +70,11 @@ async function queryByScheduleDay(pool, scheduleDay, leagueKey, includeYesterday
 
   if (includeYesterdayFinished) {
     const yesterday = scheduleDayForRange('yesterday');
+    // 「今天」含昨天整页赛程：避免开球日在昨天、状态仍为 NS 的场次被漏掉
     sql = `SELECT payload FROM matches
       WHERE (
         schedule_day = ?
-        OR (schedule_day = ? AND status IN ('FT', 'LIVE', 'HT'))
+        OR schedule_day = ?
         OR status IN ('LIVE', 'HT')
       )`;
     params.push(scheduleDay, yesterday);
@@ -137,9 +142,19 @@ async function findByDateRange(dateRange, leagueKey) {
     try {
       const { start: dayStart, end: dayEnd } = scheduleDayBoundsForRange('week');
       let sql = `SELECT payload FROM matches
-        WHERE (schedule_day >= ? AND schedule_day <= ?)
-           OR (schedule_day IS NULL AND match_time >= ? AND match_time < ?)`;
-      const params = [dayStart, dayEnd, toMysqlDatetime(start), toMysqlDatetime(end)];
+        WHERE (
+          (schedule_day >= ? AND schedule_day <= ?)
+          OR (schedule_day IS NULL AND match_time >= ? AND match_time < ?)
+          OR (status IN ('FT', 'LIVE', 'HT') AND match_time >= ? AND match_time < ?)
+        )`;
+      const params = [
+        dayStart,
+        dayEnd,
+        toMysqlDatetime(start),
+        toMysqlDatetime(end),
+        toMysqlDatetime(start),
+        toMysqlDatetime(end),
+      ];
       if (leagueKey) {
         sql += ` AND league_key = ?`;
         params.push(leagueKey);

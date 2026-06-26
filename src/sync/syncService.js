@@ -48,6 +48,44 @@ async function runJob(name, fn) {
   }
 }
 
+async function refreshEspnDayBucket(dateRange, leagueKeys = ALL_LEAGUE_KEYS) {
+  const scheduleDay = scheduleDayForRange(dateRange);
+  let updated = 0;
+  for (const leagueKey of leagueKeys) {
+    try {
+      const raw = await espn.fetchSchedule(dateRange, leagueKey);
+      for (const item of raw) {
+        const mapped = mapScheduleItem(item);
+        if (!mapped) continue;
+        if (scheduleDay) mapped.scheduleDay = scheduleDay;
+        await matchRepo.upsertMatch(mapped);
+        updated += 1;
+      }
+    } catch {
+      /* skip league */
+    }
+  }
+  return updated;
+}
+
+async function refreshCurrentScoreboards(leagueKeys = ALL_LEAGUE_KEYS) {
+  let updated = 0;
+  for (const leagueKey of leagueKeys) {
+    try {
+      const current = await espn.fetchCurrentScoreboard(leagueKey);
+      for (const item of current) {
+        const mapped = mapScheduleItem(item);
+        if (!mapped) continue;
+        await matchRepo.upsertMatch(mapped);
+        updated += 1;
+      }
+    } catch {
+      /* skip league */
+    }
+  }
+  return updated;
+}
+
 async function syncScheduleOnce() {
   if (syncing.schedule) return { skipped: true };
   syncing.schedule = true;
@@ -76,15 +114,9 @@ async function syncScheduleOnce() {
       const list = sortMatches(Array.from(map.values()));
       await matchRepo.upsertMatches(list);
 
-      // 默认 scoreboard：拉取当前进行中/刚完赛（解决「今天 Tab 只有明日 NS」的问题）
-      for (const leagueKey of ALL_LEAGUE_KEYS) {
-        const current = await espn.fetchCurrentScoreboard(leagueKey);
-        for (const item of current) {
-          const mapped = mapScheduleItem(item);
-          if (!mapped) continue;
-          await matchRepo.upsertMatch(mapped);
-        }
-      }
+      await refreshCurrentScoreboards();
+      // 补刷昨天：土美/巴澳等场次开球日在昨天，必须写回 FT
+      await refreshEspnDayBucket('yesterday');
 
       const syncedIds = list.map((m) => matchRepo.parseExternalId(m._id));
       const prunedWindow = await matchRepo.pruneMissingInRanges(DATE_RANGES, syncedIds);
@@ -103,21 +135,14 @@ async function syncLiveOnce() {
   syncing.live = true;
   try {
     return await runJob('syncLive', async () => {
-      // 优先刷默认 scoreboard（世界杯赛期最准确）
-      let updated = 0;
-      for (const leagueKey of ['World Cup', ...ALL_LEAGUE_KEYS.filter((k) => k !== 'World Cup')]) {
-        try {
-          const current = await espn.fetchCurrentScoreboard(leagueKey);
-          for (const item of current) {
-            const mapped = mapScheduleItem(item);
-            if (!mapped) continue;
-            await matchRepo.upsertMatch(mapped);
-            updated += 1;
-          }
-        } catch {
-          /* skip league */
-        }
-      }
+      let updated = await refreshCurrentScoreboards([
+        'World Cup',
+        ...ALL_LEAGUE_KEYS.filter((k) => k !== 'World Cup'),
+      ]);
+      updated += await refreshEspnDayBucket('yesterday', [
+        'World Cup',
+        ...ALL_LEAGUE_KEYS.filter((k) => k !== 'World Cup'),
+      ]);
 
       const liveRows = await matchRepo.findLiveMatches();
       const staleRows = await matchRepo.findKickoffStaleMatches(40);

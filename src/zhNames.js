@@ -83,6 +83,13 @@ const COUNTRY_ZH = {
   'DR Congo': '刚果（金）',
   'Congo DR': '刚果（金）',
   'South Africa': '南非',
+  'Cape Verde': '佛得角',
+  'Cape Verde Islands': '佛得角',
+  Curaçao: '库拉索',
+  Curacao: '库拉索',
+  'Bosnia and Herzegovina': '波黑',
+  'Bosnia-Herzegovina': '波黑',
+  'Bosnia-Herz': '波黑',
   Uzbekistan: '乌兹别克斯坦',
   Georgia: '格鲁吉亚',
   World: '国际',
@@ -199,10 +206,24 @@ function toZhCountry(country) {
   return toZhName(country);
 }
 
+function formatPlaceholderTeam(name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return '';
+  if (/^3RD\b/i.test(trimmed)) {
+    const groups = trimmed.replace(/^3RD\s+/i, '').trim();
+    return groups ? `待定（${groups}）` : '待定';
+  }
+  const groupRank = trimmed.match(/^(\d+)([A-L])$/i);
+  if (groupRank) return `${groupRank[2].toUpperCase()}组第${groupRank[1]}`;
+  return '';
+}
+
 function resolveTeamDisplayName(team) {
   if (!team) return '';
   const raw =
     team.shortDisplayName || team.displayName || team.name || team.abbreviation || '';
+  const placeholder = formatPlaceholderTeam(raw);
+  if (placeholder) return placeholder;
   return toZhName(raw);
 }
 
