@@ -18,8 +18,10 @@ const SLUG_TO_KEY = Object.fromEntries(
 /** 首页热门赛事 Tab 顺序 */
 const HOT_LEAGUE_KEYS = ['World Cup', 'Euro', 'Premier League', 'La Liga', 'Champions League'];
 
-/** 赛程页横向 Chip 筛选 */
+/** 赛程页横向 Chip 筛选（世界杯赛期优先展示） */
 const FILTER_LEAGUE_KEYS = [
+  'World Cup',
+  'Euro',
   'Premier League',
   'La Liga',
   'Bundesliga',

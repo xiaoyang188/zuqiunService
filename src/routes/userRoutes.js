@@ -73,10 +73,7 @@ function enrichMyTeams(teams, matches) {
   }));
 }
 
-router.use(dbRequired);
-
-/** POST /api/auth/login  { code } */
-router.post('/auth/login', async (req, res) => {
+router.post('/auth/login', dbRequired, async (req, res) => {
   if (!isWechatConfigured()) {
     res.status(503).json(fail('未配置 WECHAT_APPID / WECHAT_SECRET', 503));
     return;
@@ -102,10 +99,11 @@ router.post('/auth/login', async (req, res) => {
   }
 });
 
-router.use(requireAuth);
+const userApi = express.Router();
+userApi.use(requireAuth);
 
 /** GET /api/user/follows */
-router.get('/user/follows', async (req, res) => {
+userApi.get('/follows', async (req, res) => {
   try {
     const teams = await followRepo.listByUserId(req.user.id);
     res.json(ok(teams));
@@ -115,7 +113,7 @@ router.get('/user/follows', async (req, res) => {
 });
 
 /** GET /api/user/my-teams  关注球队 + 下一场/上一场 */
-router.get('/user/my-teams', async (req, res) => {
+userApi.get('/my-teams', async (req, res) => {
   try {
     const teams = await followRepo.listByUserId(req.user.id);
     const [today, week] = await Promise.all([
@@ -131,7 +129,7 @@ router.get('/user/my-teams', async (req, res) => {
 });
 
 /** POST /api/user/follows  { teamId, action, team? } */
-router.post('/user/follows', async (req, res) => {
+userApi.post('/follows', async (req, res) => {
   const teamId = String(req.body?.teamId || '').trim();
   const action = req.body?.action;
   if (!teamId || !['follow', 'unfollow'].includes(action)) {
@@ -154,7 +152,7 @@ router.post('/user/follows', async (req, res) => {
 });
 
 /** GET /api/user/reminders */
-router.get('/user/reminders', async (req, res) => {
+userApi.get('/reminders', async (req, res) => {
   try {
     const list = await reminderRepo.listByUserId(req.user.id);
     res.json(ok(list));
@@ -164,7 +162,7 @@ router.get('/user/reminders', async (req, res) => {
 });
 
 /** POST /api/user/reminders  { teamId, advanceMinutes, enabled } */
-router.post('/user/reminders', async (req, res) => {
+userApi.post('/reminders', async (req, res) => {
   const teamId = String(req.body?.teamId || '').trim();
   const advanceMinutes = Number(req.body?.advanceMinutes);
   const enabled = Boolean(req.body?.enabled);
@@ -190,5 +188,7 @@ router.post('/user/reminders', async (req, res) => {
     res.status(500).json(fail(e.message || '保存提醒失败'));
   }
 });
+
+router.use('/user', dbRequired, userApi);
 
 module.exports = router;

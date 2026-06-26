@@ -16,8 +16,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.use('/api', userRoutes);
-
 function ok(data) {
   return { code: 0, data, message: 'ok' };
 }
@@ -242,6 +240,8 @@ app.get('/api/players/:id', async (req, res) => {
     res.status(404).json(fail(e.message || '球员不存在'));
   }
 });
+
+app.use('/api', userRoutes);
 
 app.listen(PORT, () => {
   console.log(`足球赛况 API  http://127.0.0.1:${PORT}`);
