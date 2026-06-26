@@ -167,18 +167,36 @@ function pickHighlight(events) {
   };
 }
 
+function resolveAthleteAvatar(athlete) {
+  const headshot = athlete.headshot?.href;
+  if (headshot && /espncdn\.com/i.test(headshot)) return headshot;
+  const jersey =
+    athlete.jerseyImages?.find((j) => j.rel?.includes('default'))?.href ||
+    athlete.jerseyImages?.[0]?.href ||
+    '';
+  if (jersey) return jersey;
+  const id = athlete.id;
+  if (id) return `https://a.espncdn.com/i/headshots/soccer/players/full/${id}.png`;
+  return '';
+}
+
 function mapRosterPlayer(row) {
   const athlete = row.athlete || {};
   const pos = row.position?.abbreviation || row.position?.displayName || '';
+  const jersey = row.jersey ? String(row.jersey) : '';
   return {
     id: athlete.id ? `espn_player_${athlete.id}` : '',
     athleteId: athlete.id || '',
     name: athlete.displayName || athlete.fullName || '',
     shortName: athlete.shortName || '',
-    avatar: athlete.jerseyImages?.[0]?.href || athlete.headshot?.href || '',
+    avatar: resolveAthleteAvatar(athlete),
     position: toZhPosition(pos),
-    number: row.jersey ? `${row.jersey}号` : '',
+    number: jersey ? `${jersey}号` : '',
+    jersey,
     starter: Boolean(row.starter),
+    formationPlace: Number(row.formationPlace) || 0,
+    subbedIn: Boolean(row.subbedIn),
+    subbedOut: Boolean(row.subbedOut),
   };
 }
 
@@ -188,6 +206,7 @@ function mapLineups(rosters) {
     teamName: toZhName(side.team?.displayName || ''),
     teamAbbr: side.team?.abbreviation || '',
     teamLogo: teamLogo(side.team),
+    formation: side.formation || '',
     starters: (side.roster || []).filter((r) => r.starter).map(mapRosterPlayer),
     subs: (side.roster || []).filter((r) => !r.starter).map(mapRosterPlayer),
   }));

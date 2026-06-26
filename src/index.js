@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const https = require('https');
+const http = require('http');
 const { cached, cachedStale } = require('./cache');
 const { isDbEnabled } = require('./db');
 const { APP_LEAGUES, buildLeagues } = require('./leagueCodes');
@@ -15,6 +17,40 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+const IMAGE_PROXY_HOSTS = new Set(['stitcher.espn.com', 's.secure.espncdn.com', 'a.espncdn.com']);
+
+app.get('/api/proxy-image', (req, res) => {
+  const raw = String(req.query.url || '');
+  if (!raw) {
+    res.status(400).end();
+    return;
+  }
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    res.status(400).end();
+    return;
+  }
+  if (!IMAGE_PROXY_HOSTS.has(parsed.hostname)) {
+    res.status(403).end();
+    return;
+  }
+  const client = parsed.protocol === 'http:' ? http : https;
+  client
+    .get(raw, (upstream) => {
+      if (upstream.statusCode && upstream.statusCode >= 400) {
+        res.status(upstream.statusCode).end();
+        upstream.resume();
+        return;
+      }
+      res.set('Content-Type', upstream.headers['content-type'] || 'image/png');
+      res.set('Cache-Control', 'public, max-age=86400');
+      upstream.pipe(res);
+    })
+    .on('error', () => res.status(502).end());
+});
 
 function ok(data) {
   return { code: 0, data, message: 'ok' };
