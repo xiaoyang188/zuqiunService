@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS matches (
   league_key   VARCHAR(64)  NOT NULL,
   status       VARCHAR(16)  NOT NULL COMMENT 'NS/LIVE/HT/FT/POSTPONED',
   match_time   DATETIME     NOT NULL,
+  schedule_day DATE         NULL COMMENT 'ESPN 赛程日（上海 YYYY-MM-DD）',
   minute       INT          NULL,
   home_score   INT          NOT NULL DEFAULT 0,
   away_score   INT          NOT NULL DEFAULT 0,
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS matches (
   created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_match_external (external_id),
   KEY idx_match_time (match_time),
+  KEY idx_schedule_day (schedule_day),
   KEY idx_league_time (league_key, match_time),
   KEY idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

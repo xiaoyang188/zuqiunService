@@ -9,6 +9,7 @@
     "dev": "node --watch src/index.js",
     "db:init": "node src/scripts/init-db.js",
     "db:migrate:reminder": "node src/scripts/migrate-reminder.js",
+    "db:migrate:schedule-day": "node src/scripts/migrate-schedule-day.js",
     "sync:once": "node src/scripts/sync-once.js",
     "reminder:once": "node src/scripts/send-reminder-once.js"
   },

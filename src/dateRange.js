@@ -39,6 +39,50 @@ function getDateRangeBounds(dateRange) {
   throw new Error('dateRange 无效');
 }
 
+/** ESPN scoreboard dates 对应的赛程日（上海 YYYY-MM-DD），与开球 UTC 转上海日历日可能不一致 */
+function scheduleDayForRange(dateRange) {
+  if (dateRange === 'today') {
+    const { year, month, day } = shanghaiParts(new Date());
+    return `${year}-${month}-${day}`;
+  }
+  if (dateRange === 'tomorrow') {
+    const { year, month, day } = shanghaiParts(new Date(Date.now() + 86400000));
+    return `${year}-${month}-${day}`;
+  }
+  return null;
+}
+
+function scheduleDayBoundsForRange(dateRange) {
+  if (dateRange === 'today') {
+    const day = scheduleDayForRange('today');
+    return { start: day, end: day };
+  }
+  if (dateRange === 'tomorrow') {
+    const day = scheduleDayForRange('tomorrow');
+    return { start: day, end: day };
+  }
+  if (dateRange === 'week') {
+    const start = scheduleDayForRange('today');
+    const { year, month, day } = shanghaiParts(new Date(Date.now() + 7 * 86400000));
+    return { start, end: `${year}-${month}-${day}` };
+  }
+  throw new Error('dateRange 无效');
+}
+
+/**
+ * 无 schedule_day 时的兜底：ESPN「今日」场次开球常落在上海次日清晨～中午。
+ * 例：6/26 美东下午场 → match_time 为上海 6/27 03:00。
+ */
+function getMatchTimeFallbackBounds(dateRange) {
+  if (dateRange === 'today') {
+    return { start: shanghaiDayStart(0), end: new Date(shanghaiDayStart(1).getTime() + 12 * 3600_000) };
+  }
+  if (dateRange === 'tomorrow') {
+    return { start: shanghaiDayStart(1), end: new Date(shanghaiDayStart(2).getTime() + 12 * 3600_000) };
+  }
+  return getDateRangeBounds(dateRange);
+}
+
 /** UTC 时刻 → 上海 wall clock 各字段（固定 UTC+8，不会出现 24:00） */
 function shanghaiWallClock(date) {
   const d = date instanceof Date ? date : new Date(date);
@@ -63,4 +107,12 @@ function toMysqlDatetime(date) {
   return `${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
 }
 
-module.exports = { getDateRangeBounds, toMysqlDatetime, shanghaiDayStart, shanghaiEspnDate };
+module.exports = {
+  getDateRangeBounds,
+  toMysqlDatetime,
+  shanghaiDayStart,
+  shanghaiEspnDate,
+  scheduleDayForRange,
+  scheduleDayBoundsForRange,
+  getMatchTimeFallbackBounds,
+};

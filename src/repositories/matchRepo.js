@@ -1,5 +1,11 @@
 const { getPool } = require('../db');
-const { getDateRangeBounds, toMysqlDatetime } = require('../dateRange');
+const {
+  getDateRangeBounds,
+  toMysqlDatetime,
+  scheduleDayForRange,
+  scheduleDayBoundsForRange,
+  getMatchTimeFallbackBounds,
+} = require('../dateRange');
 
 function parseExternalId(matchId) {
   return String(matchId).replace(/^(espn_match_|fd_match_)/, '');
@@ -18,12 +24,13 @@ async function upsertMatch(match) {
 
   await pool.execute(
     `INSERT INTO matches
-      (external_id, league_key, status, match_time, minute, home_score, away_score, payload, synced_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      (external_id, league_key, status, match_time, schedule_day, minute, home_score, away_score, payload, synced_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
      ON DUPLICATE KEY UPDATE
       league_key = VALUES(league_key),
       status = VALUES(status),
       match_time = VALUES(match_time),
+      schedule_day = COALESCE(VALUES(schedule_day), schedule_day),
       minute = VALUES(minute),
       home_score = VALUES(home_score),
       away_score = VALUES(away_score),
@@ -34,6 +41,7 @@ async function upsertMatch(match) {
       match.league,
       match.status,
       matchTime,
+      match.scheduleDay || null,
       match.minute ?? null,
       match.homeScore ?? 0,
       match.awayScore ?? 0,
@@ -48,8 +56,88 @@ async function upsertMatches(matches) {
   }
 }
 
+async function queryByScheduleDay(pool, scheduleDay, leagueKey) {
+  let sql = `SELECT payload FROM matches WHERE schedule_day = ?`;
+  const params = [scheduleDay];
+  if (leagueKey) {
+    sql += ` AND league_key = ?`;
+    params.push(leagueKey);
+  }
+  sql += ` ORDER BY match_time ASC`;
+  try {
+    const [rows] = await pool.execute(sql, params);
+    return rows;
+  } catch (e) {
+    if (/schedule_day|Unknown column/i.test(e.message)) return [];
+    throw e;
+  }
+}
+
 async function findByDateRange(dateRange, leagueKey) {
   const pool = getPool();
+
+  if (dateRange === 'today' || dateRange === 'tomorrow') {
+    const scheduleDay = scheduleDayForRange(dateRange);
+    let rows = await queryByScheduleDay(pool, scheduleDay, leagueKey);
+
+    if (!rows.length && dateRange === 'today') {
+      const { start, end } = getMatchTimeFallbackBounds('today');
+      let fallbackSql = `SELECT payload FROM matches WHERE match_time >= ? AND match_time < ?`;
+      const fallbackParams = [toMysqlDatetime(start), toMysqlDatetime(end)];
+      if (leagueKey) {
+        fallbackSql += ` AND league_key = ?`;
+        fallbackParams.push(leagueKey);
+      }
+      fallbackSql += ` ORDER BY match_time ASC`;
+      [rows] = await pool.execute(fallbackSql, fallbackParams);
+    }
+
+    if (!rows.length && dateRange === 'tomorrow') {
+      const { start, end } = getDateRangeBounds('tomorrow');
+      let fallbackSql = `SELECT payload FROM matches WHERE match_time >= ? AND match_time < ?`;
+      const fallbackParams = [toMysqlDatetime(start), toMysqlDatetime(end)];
+      if (leagueKey) {
+        fallbackSql += ` AND league_key = ?`;
+        fallbackParams.push(leagueKey);
+      }
+      fallbackSql += ` ORDER BY match_time ASC`;
+      [rows] = await pool.execute(fallbackSql, fallbackParams);
+    }
+
+    return rows.map(rowToMatch).filter(Boolean);
+  }
+
+  if (dateRange === 'week') {
+    const { start, end } = getDateRangeBounds('week');
+    let rows = [];
+    try {
+      const { start: dayStart, end: dayEnd } = scheduleDayBoundsForRange('week');
+      let sql = `SELECT payload FROM matches
+        WHERE (schedule_day >= ? AND schedule_day <= ?)
+           OR (schedule_day IS NULL AND match_time >= ? AND match_time < ?)`;
+      const params = [dayStart, dayEnd, toMysqlDatetime(start), toMysqlDatetime(end)];
+      if (leagueKey) {
+        sql += ` AND league_key = ?`;
+        params.push(leagueKey);
+      }
+      sql += ` ORDER BY match_time ASC`;
+      [rows] = await pool.execute(sql, params);
+    } catch (e) {
+      if (!/schedule_day|Unknown column/i.test(e.message)) throw e;
+    }
+    if (rows.length) return rows.map(rowToMatch).filter(Boolean);
+
+    let sql = `SELECT payload FROM matches WHERE match_time >= ? AND match_time < ?`;
+    const params = [toMysqlDatetime(start), toMysqlDatetime(end)];
+    if (leagueKey) {
+      sql += ` AND league_key = ?`;
+      params.push(leagueKey);
+    }
+    sql += ` ORDER BY match_time ASC`;
+    [rows] = await pool.execute(sql, params);
+    return rows.map(rowToMatch).filter(Boolean);
+  }
+
   const { start, end } = getDateRangeBounds(dateRange);
   let sql = `SELECT payload FROM matches WHERE match_time >= ? AND match_time < ?`;
   const params = [toMysqlDatetime(start), toMysqlDatetime(end)];

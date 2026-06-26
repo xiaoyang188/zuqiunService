@@ -18,7 +18,7 @@ const playerRankingRepo = require('../repositories/playerRankingRepo');
 const playerRepo = require('../repositories/playerRepo');
 const { writeSyncLog } = require('../repositories/syncLogRepo');
 const { isDbEnabled } = require('../db');
-const { shanghaiDayStart } = require('../dateRange');
+const { shanghaiDayStart, scheduleDayForRange } = require('../dateRange');
 
 const DATE_RANGES = ['today', 'tomorrow', 'week'];
 const ALL_LEAGUE_KEYS = Object.keys(APP_LEAGUES);
@@ -56,10 +56,18 @@ async function syncScheduleOnce() {
 
       for (const leagueKey of ALL_LEAGUE_KEYS) {
         for (const dateRange of DATE_RANGES) {
+          const scheduleDay = scheduleDayForRange(dateRange);
           const raw = await espn.fetchSchedule(dateRange, leagueKey);
           raw.forEach((item) => {
             const mapped = mapScheduleItem(item);
-            if (mapped) map.set(mapped._id, mapped);
+            if (!mapped) return;
+            const existing = map.get(mapped._id);
+            if (existing) {
+              if (scheduleDay) existing.scheduleDay = scheduleDay;
+              return;
+            }
+            if (scheduleDay) mapped.scheduleDay = scheduleDay;
+            map.set(mapped._id, mapped);
           });
         }
       }
