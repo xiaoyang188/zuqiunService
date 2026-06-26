@@ -39,22 +39,28 @@ function getDateRangeBounds(dateRange) {
   throw new Error('dateRange 无效');
 }
 
+/** UTC 时刻 → 上海 wall clock 各字段（固定 UTC+8，不会出现 24:00） */
+function shanghaiWallClock(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  const shMs = d.getTime() + 8 * 3600_000;
+  const sh = new Date(shMs);
+  return {
+    year: sh.getUTCFullYear(),
+    month: sh.getUTCMonth() + 1,
+    day: sh.getUTCDate(),
+    hour: sh.getUTCHours(),
+    minute: sh.getUTCMinutes(),
+    second: sh.getUTCSeconds(),
+  };
+}
+
 function toMysqlDatetime(date) {
   const d = date instanceof Date ? date : new Date(date);
   if (Number.isNaN(d.getTime())) return '1970-01-01 00:00:00';
 
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: TZ,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(d);
-  const pick = (type) => parts.find((p) => p.type === type)?.value || '00';
-  return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`;
+  const { year, month, day, hour, minute, second } = shanghaiWallClock(d);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
 }
 
 module.exports = { getDateRangeBounds, toMysqlDatetime, shanghaiDayStart, shanghaiEspnDate };
