@@ -116,6 +116,8 @@ async function fetchSchedule(dateRange, leagueKey) {
   let datesQuery = '';
   if (dateRange === 'today') {
     datesQuery = shanghaiEspnDate(0);
+  } else if (dateRange === 'yesterday') {
+    datesQuery = shanghaiEspnDate(-1);
   } else if (dateRange === 'tomorrow') {
     datesQuery = shanghaiEspnDate(1);
   } else if (dateRange === 'week') {
@@ -126,6 +128,31 @@ async function fetchSchedule(dateRange, leagueKey) {
     leagues.map(async ({ key, slug }) => {
       try {
         const events = await fetchScoreboardEvents(slug, datesQuery);
+        return events.map((event) => ({
+          event,
+          leagueKey: key,
+          leagueSlug: slug,
+        }));
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  const map = new Map();
+  batches.flat().forEach((item) => {
+    map.set(item.event.id, item);
+  });
+  return Array.from(map.values());
+}
+
+/** 默认 scoreboard（含当前进行中/刚完赛），不指定 dates */
+async function fetchCurrentScoreboard(leagueKey) {
+  const leagues = leaguesToFetch(leagueKey);
+  const batches = await Promise.all(
+    leagues.map(async ({ key, slug }) => {
+      try {
+        const events = await fetchScoreboardEvents(slug, '');
         return events.map((event) => ({
           event,
           leagueKey: key,
@@ -274,97 +301,6 @@ async function fetchFinishedEvents(meta) {
     .slice(0, 20);
 }
 
-async function fetchFinishedEventsForForm(meta, limit = 60) {
-  const now = new Date();
-  const range90Start = addDays(-120);
-  const dateRanges = [
-    `${formatEspnDate(range90Start)}-${formatEspnDate(now)}`,
-    '',
-  ];
-
-  let events = [];
-  for (const datesQuery of dateRanges) {
-    try {
-      const batch = await fetchScoreboardEvents(meta.slug, datesQuery);
-      if (batch.length) {
-        events = batch;
-        break;
-      }
-    } catch {
-      /* try next range */
-    }
-  }
-
-  return events
-    .filter((e) => e.competitions?.[0]?.status?.type?.state === 'post')
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-    .slice(0, limit);
-}
-
-function pushTeamForm(map, teamId, result, maxLen = 5) {
-  if (!teamId) return;
-  const list = map.get(teamId) || [];
-  if (list.length >= maxLen) return;
-  list.push(result);
-  map.set(teamId, list);
-}
-
-/** 从近期已结束比赛推算球队近况 W/D/L（docs: site-v2-scoreboard） */
-async function buildTeamFormMap(leagueKey) {
-  const meta = getLeagueByKey(leagueKey);
-  if (!meta) return new Map();
-
-  const finished = await fetchFinishedEventsForForm(meta);
-  const formMap = new Map();
-
-  for (const event of finished) {
-    const comp = event.competitions?.[0];
-    const competitors = comp?.competitors || [];
-    const home = competitors.find((c) => c.homeAway === 'home');
-    const away = competitors.find((c) => c.homeAway === 'away');
-    if (!home?.team?.id || !away?.team?.id) continue;
-
-    const homeId = `espn_team_${home.team.id}`;
-    const awayId = `espn_team_${away.team.id}`;
-    if ((formMap.get(homeId)?.length || 0) >= 5 && (formMap.get(awayId)?.length || 0) >= 5) {
-      continue;
-    }
-
-    const hs = Number(home.score);
-    const as = Number(away.score);
-    if (!Number.isFinite(hs) || !Number.isFinite(as)) continue;
-
-    let homeResult = 'D';
-    let awayResult = 'D';
-    if (hs > as) {
-      homeResult = 'W';
-      awayResult = 'L';
-    } else if (hs < as) {
-      homeResult = 'L';
-      awayResult = 'W';
-    }
-
-    pushTeamForm(formMap, homeId, homeResult);
-    pushTeamForm(formMap, awayId, awayResult);
-  }
-
-  return formMap;
-}
-
-function formatFormStreak(form) {
-  if (!form?.length) return '';
-  const latest = form[0];
-  let count = 1;
-  for (let i = 1; i < form.length; i += 1) {
-    if (form[i] !== latest) break;
-    count += 1;
-  }
-  if (latest === 'W') return `${count}连胜`;
-  if (latest === 'L') return `${count}连败`;
-  if (count > 1) return `${count}连平`;
-  return '1平';
-}
-
 async function fetchKnockoutBracket(leagueKey) {
   const { CUP_LEAGUES, pickKnockoutDateRange, getRoundSlug, buildBracketRounds } = require('./bracket');
   if (!CUP_LEAGUES.has(leagueKey)) return [];
@@ -378,22 +314,6 @@ async function fetchKnockoutBracket(leagueKey) {
   const events = await fetchScoreboardEvents(meta.slug, datesQuery);
   const knockout = events.filter((e) => getRoundSlug(e));
   return buildBracketRounds(knockout, leagueKey);
-}
-
-async function enrichStandingsWithForm(leagueKey, rows) {
-  try {
-    const formMap = await buildTeamFormMap(leagueKey);
-    return rows.map((row) => {
-      const form = formMap.get(row.teamId) || [];
-      return {
-        ...row,
-        form,
-        formText: formatFormStreak(form),
-      };
-    });
-  } catch {
-    return rows.map((row) => ({ ...row, form: [], formText: '' }));
-  }
 }
 
 async function forEachGoalEvent(meta, finished, handler) {
@@ -510,12 +430,12 @@ module.exports = {
   registerEvent,
   resolveRegistry,
   fetchSchedule,
+  fetchCurrentScoreboard,
   fetchMatchSummary,
   fetchStandingsRaw,
   fetchCompetitionTeams,
   fetchScorersFromPlays,
   fetchAssistsFromSummaries,
   fetchAthleteRaw,
-  enrichStandingsWithForm,
   fetchKnockoutBracket,
 };

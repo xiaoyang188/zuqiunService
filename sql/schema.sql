@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS standings (
   ga                INT          NOT NULL DEFAULT 0,
   gd                INT          NOT NULL DEFAULT 0,
   points            INT          NOT NULL DEFAULT 0,
-  payload           JSON         NOT NULL COMMENT '小程序 Standing JSON（含 form/formText）',
+  payload           JSON         NOT NULL COMMENT '小程序 Standing JSON',
   synced_at         DATETIME     NOT NULL,
   UNIQUE KEY uk_standing_league_team (league_key, team_external_id),
   KEY idx_standing_league (league_key)

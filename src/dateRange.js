@@ -27,6 +27,9 @@ function shanghaiEspnDate(dayOffset = 0) {
 
 function getDateRangeBounds(dateRange) {
   const todayStart = shanghaiDayStart(0);
+  if (dateRange === 'yesterday') {
+    return { start: shanghaiDayStart(-1), end: todayStart };
+  }
   if (dateRange === 'today') {
     return { start: todayStart, end: shanghaiDayStart(1) };
   }
@@ -47,6 +50,10 @@ function scheduleDayForRange(dateRange) {
   }
   if (dateRange === 'tomorrow') {
     const { year, month, day } = shanghaiParts(new Date(Date.now() + 86400000));
+    return `${year}-${month}-${day}`;
+  }
+  if (dateRange === 'yesterday') {
+    const { year, month, day } = shanghaiParts(new Date(Date.now() - 86400000));
     return `${year}-${month}-${day}`;
   }
   return null;
@@ -107,6 +114,13 @@ function toMysqlDatetime(date) {
   return `${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
 }
 
+function scheduleDayFromInstant(isoOrDate) {
+  const { year, month, day } = shanghaiParts(
+    isoOrDate instanceof Date ? isoOrDate : new Date(isoOrDate)
+  );
+  return `${year}-${month}-${day}`;
+}
+
 module.exports = {
   getDateRangeBounds,
   toMysqlDatetime,
@@ -115,4 +129,5 @@ module.exports = {
   scheduleDayForRange,
   scheduleDayBoundsForRange,
   getMatchTimeFallbackBounds,
+  scheduleDayFromInstant,
 };

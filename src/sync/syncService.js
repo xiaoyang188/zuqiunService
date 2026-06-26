@@ -10,6 +10,7 @@ const {
   mapAthleteDetail,
   sortMatches,
 } = require('../mapper');
+const { mergeMatchData } = require('../matchMerge');
 const matchRepo = require('../repositories/matchRepo');
 const standingRepo = require('../repositories/standingRepo');
 const bracketRepo = require('../repositories/bracketRepo');
@@ -20,7 +21,7 @@ const { writeSyncLog } = require('../repositories/syncLogRepo');
 const { isDbEnabled } = require('../db');
 const { shanghaiDayStart, scheduleDayForRange } = require('../dateRange');
 
-const DATE_RANGES = ['today', 'tomorrow', 'week'];
+const DATE_RANGES = ['yesterday', 'today', 'tomorrow', 'week'];
 const ALL_LEAGUE_KEYS = Object.keys(APP_LEAGUES);
 const FINISHED_RETENTION_DAYS = Number(process.env.SYNC_MATCH_RETENTION_DAYS) || 90;
 
@@ -61,12 +62,12 @@ async function syncScheduleOnce() {
           raw.forEach((item) => {
             const mapped = mapScheduleItem(item);
             if (!mapped) return;
+            if (scheduleDay) mapped.scheduleDay = scheduleDay;
             const existing = map.get(mapped._id);
             if (existing) {
-              if (scheduleDay) existing.scheduleDay = scheduleDay;
+              map.set(mapped._id, mergeMatchData(existing, mapped));
               return;
             }
-            if (scheduleDay) mapped.scheduleDay = scheduleDay;
             map.set(mapped._id, mapped);
           });
         }
@@ -74,6 +75,16 @@ async function syncScheduleOnce() {
 
       const list = sortMatches(Array.from(map.values()));
       await matchRepo.upsertMatches(list);
+
+      // 默认 scoreboard：拉取当前进行中/刚完赛（解决「今天 Tab 只有明日 NS」的问题）
+      for (const leagueKey of ALL_LEAGUE_KEYS) {
+        const current = await espn.fetchCurrentScoreboard(leagueKey);
+        for (const item of current) {
+          const mapped = mapScheduleItem(item);
+          if (!mapped) continue;
+          await matchRepo.upsertMatch(mapped);
+        }
+      }
 
       const syncedIds = list.map((m) => matchRepo.parseExternalId(m._id));
       const prunedWindow = await matchRepo.pruneMissingInRanges(DATE_RANGES, syncedIds);
@@ -92,10 +103,34 @@ async function syncLiveOnce() {
   syncing.live = true;
   try {
     return await runJob('syncLive', async () => {
-      const liveRows = await matchRepo.findLiveMatches();
+      // 优先刷默认 scoreboard（世界杯赛期最准确）
       let updated = 0;
+      for (const leagueKey of ['World Cup', ...ALL_LEAGUE_KEYS.filter((k) => k !== 'World Cup')]) {
+        try {
+          const current = await espn.fetchCurrentScoreboard(leagueKey);
+          for (const item of current) {
+            const mapped = mapScheduleItem(item);
+            if (!mapped) continue;
+            await matchRepo.upsertMatch(mapped);
+            updated += 1;
+          }
+        } catch {
+          /* skip league */
+        }
+      }
 
-      for (const row of liveRows) {
+      const liveRows = await matchRepo.findLiveMatches();
+      const staleRows = await matchRepo.findKickoffStaleMatches(40);
+      const seen = new Set();
+      const rows = [];
+      for (const row of [...liveRows, ...staleRows]) {
+        const id = String(row.external_id);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        rows.push(row);
+      }
+
+      for (const row of rows) {
         try {
           const { summary, leagueKey } = await espn.fetchMatchSummary(
             row.external_id,
@@ -128,7 +163,6 @@ async function syncStandingsOnce() {
         try {
           const table = await espn.fetchStandingsRaw(leagueKey);
           let rows = table.map((row) => mapStandingRow(row, leagueKey));
-          rows = await espn.enrichStandingsWithForm(leagueKey, rows);
           await standingRepo.replaceStandings(leagueKey, rows);
           total += rows.length;
 

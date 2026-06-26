@@ -1,4 +1,5 @@
 const { getPool } = require('../db');
+const { mergeMatchData } = require('../matchMerge');
 const {
   getDateRangeBounds,
   toMysqlDatetime,
@@ -20,7 +21,10 @@ function rowToMatch(row) {
 async function upsertMatch(match) {
   const pool = getPool();
   const externalId = parseExternalId(match._id);
-  const matchTime = toMysqlDatetime(match.matchTime);
+  const existingRow = await findByExternalId(externalId);
+  const existing = existingRow ? rowToMatch(existingRow) : null;
+  const merged = mergeMatchData(existing, match);
+  const matchTime = toMysqlDatetime(merged.matchTime);
 
   await pool.execute(
     `INSERT INTO matches
@@ -38,14 +42,14 @@ async function upsertMatch(match) {
       synced_at = NOW()`,
     [
       externalId,
-      match.league,
-      match.status,
+      merged.league,
+      merged.status,
       matchTime,
-      match.scheduleDay || null,
-      match.minute ?? null,
-      match.homeScore ?? 0,
-      match.awayScore ?? 0,
-      JSON.stringify(match),
+      merged.scheduleDay || null,
+      merged.minute ?? null,
+      merged.homeScore ?? 0,
+      merged.awayScore ?? 0,
+      JSON.stringify(merged),
     ]
   );
 }
@@ -56,9 +60,24 @@ async function upsertMatches(matches) {
   }
 }
 
-async function queryByScheduleDay(pool, scheduleDay, leagueKey) {
-  let sql = `SELECT payload FROM matches WHERE schedule_day = ?`;
-  const params = [scheduleDay];
+async function queryByScheduleDay(pool, scheduleDay, leagueKey, includeYesterdayFinished = false) {
+  let sql;
+  const params = [];
+
+  if (includeYesterdayFinished) {
+    const yesterday = scheduleDayForRange('yesterday');
+    sql = `SELECT payload FROM matches
+      WHERE (
+        schedule_day = ?
+        OR (schedule_day = ? AND status IN ('FT', 'LIVE', 'HT'))
+        OR status IN ('LIVE', 'HT')
+      )`;
+    params.push(scheduleDay, yesterday);
+  } else {
+    sql = `SELECT payload FROM matches WHERE schedule_day = ?`;
+    params.push(scheduleDay);
+  }
+
   if (leagueKey) {
     sql += ` AND league_key = ?`;
     params.push(leagueKey);
@@ -78,7 +97,12 @@ async function findByDateRange(dateRange, leagueKey) {
 
   if (dateRange === 'today' || dateRange === 'tomorrow') {
     const scheduleDay = scheduleDayForRange(dateRange);
-    let rows = await queryByScheduleDay(pool, scheduleDay, leagueKey);
+    let rows = await queryByScheduleDay(
+      pool,
+      scheduleDay,
+      leagueKey,
+      dateRange === 'today'
+    );
 
     if (!rows.length && dateRange === 'today') {
       const { start, end } = getMatchTimeFallbackBounds('today');
@@ -163,6 +187,23 @@ async function findByExternalId(externalId) {
   return rows[0] || null;
 }
 
+async function findKickoffStaleMatches(limit = 40) {
+  const pool = getPool();
+  const now = new Date();
+  const start = new Date(now.getTime() - 12 * 3600_000);
+  const end = new Date(now.getTime() + 20 * 60_000);
+  const [rows] = await pool.execute(
+    `SELECT external_id, league_key, payload, status
+     FROM matches
+     WHERE status IN ('NS', 'LIVE', 'HT')
+       AND match_time >= ? AND match_time <= ?
+     ORDER BY match_time DESC
+     LIMIT ${Math.min(Math.max(limit, 1), 60)}`,
+    [toMysqlDatetime(start), toMysqlDatetime(end)]
+  );
+  return rows;
+}
+
 async function findLiveMatches() {
   const pool = getPool();
   const [rows] = await pool.execute(
@@ -216,7 +257,7 @@ async function pruneMissingInRanges(dateRanges, syncedExternalIds) {
     for (const row of rows) {
       if (keep.has(String(row.external_id))) continue;
       // 已结束场次 ESPN 后续 scoreboard 常不再返回，不能因缺步就删库
-      if (row.status === 'FT') continue;
+      if (row.status === 'FT' || row.status === 'LIVE' || row.status === 'HT') continue;
       await pool.execute(`DELETE FROM matches WHERE external_id = ?`, [row.external_id]);
       removed += 1;
     }
@@ -265,6 +306,7 @@ module.exports = {
   findToday,
   findByExternalId,
   findLiveMatches,
+  findKickoffStaleMatches,
   countMatches,
   findNeedingDetailEnrich,
   pruneMissingInRanges,

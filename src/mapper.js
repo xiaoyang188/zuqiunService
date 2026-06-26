@@ -1,5 +1,6 @@
 const { getLeagueLabel } = require('./leagueCodes');
 const { registerEvent } = require('./espnClient');
+const { scheduleDayFromInstant } = require('./dateRange');
 const { toZhName, toZhCountry, resolveTeamDisplayName, toZhPosition } = require('./zhNames');
 
 const ESPN_STATUS_MAP = {
@@ -50,6 +51,7 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
 
   const displayClock = comp.status?.displayClock || '';
   const status = mapEspnStatus(comp.status);
+  const matchTime = comp.startDate || event.date;
   return {
     _id: `espn_match_${event.id}`,
     league: leagueKey,
@@ -65,7 +67,8 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
     homeScore: Number(home.score) || 0,
     awayScore: Number(away.score) || 0,
     status,
-    matchTime: comp.startDate || event.date,
+    matchTime,
+    scheduleDay: matchTime ? scheduleDayFromInstant(matchTime) : undefined,
     minute: status === 'LIVE' || status === 'HT' ? parseMinute(displayClock) : null,
     statusBadge: displayClock || (status === 'HT' ? 'HT' : status === 'FT' ? 'FT' : ''),
     venue: comp.venue?.fullName || '',
@@ -297,27 +300,10 @@ function statSummary(stats, name) {
   return item?.summary || item?.displayValue || '';
 }
 
-const QUAL_NOTE_ZH = {
-  'Champions League': '欧冠区',
-  'Champions League Qualification': '欧冠资格',
-  'Europa League': '欧联区',
-  'Conference League': '欧协联区',
-  'Relegation': '降级区',
-  'Advance to Round of 32': '晋级32强',
-  'Advance to Round of 16': '晋级16强',
-  'Advance to Knockout Stage': '晋级淘汰赛',
-};
-
-function translateQualNote(desc) {
-  if (!desc) return '';
-  return QUAL_NOTE_ZH[desc] || desc;
-}
-
 function mapStandingRow(row, leagueKey) {
   const { entry, rank } = row;
   const team = entry.team;
   const stats = entry.stats || [];
-  const note = entry.note || {};
 
   return {
     _id: `standing_${leagueKey}_${team.id}`,
@@ -335,10 +321,6 @@ function mapStandingRow(row, leagueKey) {
     gd: statValue(stats, 'pointDifferential'),
     points: statValue(stats, 'points'),
     groupName: row.groupName || '',
-    qualNote: translateQualNote(note.description || ''),
-    qualColor: note.color || '',
-    rankChange: statValue(stats, 'rankChange'),
-    overallRecord: statSummary(stats, 'overall'),
   };
 }
 
