@@ -233,26 +233,25 @@ async function countMatches() {
   return row.cnt;
 }
 
-/** 今日/明日且缺少 stats/事件/阵容 的比赛，供后台补全详情 */
+/** 近几日缺少 stats/事件/阵容 的比赛，供后台补全详情 */
 async function findNeedingDetailEnrich(limit = 15) {
   const pool = getPool();
   const [rows] = await pool.execute(
     `SELECT external_id, league_key, payload, status, match_time
      FROM matches
-     WHERE match_time >= CURDATE()
+     WHERE match_time >= DATE_SUB(CURDATE(), INTERVAL 3 DAY)
        AND match_time < DATE_ADD(CURDATE(), INTERVAL 2 DAY)
-     ORDER BY FIELD(status, 'LIVE', 'HT', 'NS', 'FT'), match_time ASC
-     LIMIT 60`
+     ORDER BY FIELD(status, 'LIVE', 'HT', 'NS', 'FT'), match_time DESC
+     LIMIT 80`
   );
   const need = [];
   for (const row of rows) {
     if (need.length >= limit) break;
     const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
-    const hasDetail =
-      Boolean(payload?.stats) ||
-      (payload?.events?.length ?? 0) > 0 ||
-      (payload?.lineups?.length ?? 0) > 0;
-    if (!hasDetail) need.push(row);
+    const missingStats = !payload?.stats;
+    const missingEvents = !(payload?.events?.length);
+    const missingLineups = !(payload?.lineups?.length);
+    if (missingStats || missingEvents || missingLineups) need.push(row);
   }
   return need;
 }

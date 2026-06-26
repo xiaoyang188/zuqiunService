@@ -72,7 +72,6 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
     minute: status === 'LIVE' || status === 'HT' ? parseMinute(displayClock) : null,
     statusBadge: displayClock || (status === 'HT' ? 'HT' : status === 'FT' ? 'FT' : ''),
     venue: comp.venue?.fullName || '',
-    stats: null,
   };
 }
 
