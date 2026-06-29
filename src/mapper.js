@@ -11,8 +11,13 @@ const ESPN_STATUS_MAP = {
 function mapEspnStatus(status) {
   const state = status?.type?.state;
   const name = status?.type?.name || '';
-  if (state === 'pre') return 'NS';
+  const detail = status?.type?.detail || status?.type?.shortDetail || '';
+  if (status?.type?.completed === true) return 'FT';
   if (state === 'post') return 'FT';
+  if (/full.?time|STATUS_FULL_TIME|final/i.test(name) || /^FT$/i.test(String(detail).trim())) {
+    return 'FT';
+  }
+  if (state === 'pre') return 'NS';
   if (state === 'in') {
     if (/half/i.test(name) || name === 'STATUS_HALFTIME') return 'HT';
     return 'LIVE';

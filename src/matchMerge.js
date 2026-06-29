@@ -1,5 +1,5 @@
-/** 状态优先级：禁止 sync 把 FT/LIVE 覆盖回 NS */
-const STATUS_RANK = { LIVE: 4, HT: 3, FT: 2, NS: 1, POSTPONED: 0 };
+/** 状态优先级：FT 最高；禁止赛程/旧 scoreboard 把已结束覆盖回进行中 */
+const STATUS_RANK = { FT: 5, LIVE: 4, HT: 3, NS: 1, POSTPONED: 0 };
 
 function statusRank(status) {
   return STATUS_RANK[status] ?? 0;
