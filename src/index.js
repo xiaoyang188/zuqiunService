@@ -1,6 +1,12 @@
 require('dotenv').config();
 const express = require('express');
-const compression = require('compression');
+let compression;
+try {
+  compression = require('compression');
+} catch {
+  compression = null;
+  console.warn('[api] compression 未安装，响应不压缩（请在 server 目录执行 npm install）');
+}
 const cors = require('cors');
 const https = require('https');
 const http = require('http');
@@ -16,7 +22,7 @@ const { isWechatConfigured, getReminderTemplateId } = require('./wechat/wechatSe
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
-app.use(compression());
+app.use(compression ? compression() : (_req, _res, next) => next());
 app.use(cors());
 app.use(express.json());
 
