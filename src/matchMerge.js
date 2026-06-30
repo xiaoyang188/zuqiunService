@@ -1,5 +1,5 @@
-/** 状态优先级：FT 最高；禁止赛程/旧 scoreboard 把已结束覆盖回进行中 */
-const STATUS_RANK = { FT: 5, LIVE: 4, HT: 3, NS: 1, POSTPONED: 0 };
+/** 状态优先级：FT/AET 最高；进行中 ET/PEN 与 LIVE 同级；禁止旧 scoreboard 覆盖已结束 */
+const STATUS_RANK = { FT: 5, AET: 5, LIVE: 4, ET: 4, PEN: 4, HT: 3, NS: 1, POSTPONED: 0 };
 
 function statusRank(status) {
   return STATUS_RANK[status] ?? 0;
@@ -17,7 +17,11 @@ const DETAIL_PRESERVE_KEYS = [
   'groupText',
   'stageText',
   'competitionNote',
+  'scoreBreakdown',
+  'penaltyShootout',
 ];
+
+const FLAG_PRESERVE_KEYS = ['wentToExtraTime', 'decidedByPenalties'];
 
 function isEmptyDetail(value) {
   if (value == null) return true;
@@ -52,6 +56,16 @@ function mergeMatchData(existing, incoming) {
     if (isEmptyDetail(incoming[key]) && !isEmptyDetail(existing[key])) {
       out[key] = existing[key];
     }
+  }
+
+  for (const key of FLAG_PRESERVE_KEYS) {
+    if (!incoming[key] && existing[key]) {
+      out[key] = existing[key];
+    }
+  }
+
+  if (!incoming.periodLabel && existing.periodLabel) {
+    out.periodLabel = existing.periodLabel;
   }
 
   out.scheduleDay = incoming.scheduleDay || existing.scheduleDay || out.scheduleDay;

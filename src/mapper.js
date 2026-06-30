@@ -101,6 +101,42 @@ function parseScoreBreakdown(homeComp, awayComp) {
   };
 }
 
+function buildStatusBadge(comp, status, statusDetail) {
+  const displayClock = comp.status?.displayClock || '';
+  const completed =
+    comp.status?.type?.completed === true || comp.status?.type?.state === 'post';
+  if (completed && displayClock && /'\s*$/.test(displayClock) && statusDetail) {
+    return statusDetail;
+  }
+  if (status === 'HT') return 'HT';
+  if (status === 'ET') return displayClock || '加时';
+  if (status === 'PEN') return displayClock || '点球大战';
+  return displayClock || statusDetail || (status === 'FT' ? 'FT' : '');
+}
+
+function inferPeriodFlags(status, statusDetail, scoreBreakdown) {
+  if (scoreBreakdown) {
+    return {
+      wentToExtraTime: scoreBreakdown.wentToExtraTime,
+      decidedByPenalties: scoreBreakdown.decidedByPenalties,
+      periodLabel: buildPeriodLabel(status, scoreBreakdown, statusDetail),
+    };
+  }
+  const decidedByPenalties =
+    isPenaltyFinished('', statusDetail) ||
+    /STATUS_FINAL_PEN|FT-Pens/i.test(statusDetail || '');
+  const wentToExtraTime =
+    status === 'AET' ||
+    isExtraTimeFinished('', statusDetail) ||
+    (decidedByPenalties && /120|ET|Extra/i.test(statusDetail || ''));
+  const periodLabel = buildPeriodLabel(status, null, statusDetail);
+  return {
+    wentToExtraTime: wentToExtraTime || decidedByPenalties,
+    decidedByPenalties,
+    periodLabel,
+  };
+}
+
 function buildPeriodLabel(status, scoreBreakdown, statusDetail) {
   if (status === 'ET') return '加时';
   if (status === 'PEN') return '点球大战';
@@ -145,6 +181,7 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
   const statusDetail = comp.status?.type?.shortDetail || comp.status?.type?.detail || '';
   const status = mapEspnStatus(comp.status);
   const scoreBreakdown = parseScoreBreakdown(home, away);
+  const periodFlags = inferPeriodFlags(status, statusDetail, scoreBreakdown);
   const matchTime = comp.startDate || event.date;
   return {
     _id: `espn_match_${event.id}`,
@@ -166,11 +203,11 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
     minute: status === 'LIVE' || status === 'HT' || status === 'ET' || status === 'PEN'
       ? parseMinute(displayClock)
       : null,
-    statusBadge: displayClock || statusDetail || (status === 'HT' ? 'HT' : status === 'FT' ? 'FT' : ''),
-    periodLabel: buildPeriodLabel(status, scoreBreakdown, statusDetail),
+    statusBadge: buildStatusBadge(comp, status, statusDetail),
+    periodLabel: periodFlags.periodLabel,
     scoreBreakdown: scoreBreakdown || undefined,
-    wentToExtraTime: scoreBreakdown?.wentToExtraTime || false,
-    decidedByPenalties: scoreBreakdown?.decidedByPenalties || false,
+    wentToExtraTime: periodFlags.wentToExtraTime,
+    decidedByPenalties: periodFlags.decidedByPenalties,
     venue: comp.venue?.fullName || '',
   };
 }
@@ -398,20 +435,14 @@ function mapSummaryToMatch(summary, leagueKey) {
   match.groupText = groupText;
   match.stageText = stageText;
   match.competitionNote = competitionNote;
-  match.statusBadge =
-    comp.status?.displayClock ||
-    comp.status?.type?.shortDetail ||
-    comp.status?.type?.detail ||
-    match.statusBadge ||
-    '';
   const statusDetail = comp.status?.type?.shortDetail || comp.status?.type?.detail || '';
+  match.statusBadge = buildStatusBadge(comp, match.status, statusDetail) || match.statusBadge || '';
   const scoreBreakdown = parseScoreBreakdown(homeComp, awayComp);
-  if (scoreBreakdown) {
-    match.scoreBreakdown = scoreBreakdown;
-    match.wentToExtraTime = scoreBreakdown.wentToExtraTime;
-    match.decidedByPenalties = scoreBreakdown.decidedByPenalties;
-  }
-  match.periodLabel = buildPeriodLabel(match.status, scoreBreakdown, statusDetail);
+  const periodFlags = inferPeriodFlags(match.status, statusDetail, scoreBreakdown);
+  if (scoreBreakdown) match.scoreBreakdown = scoreBreakdown;
+  match.wentToExtraTime = periodFlags.wentToExtraTime;
+  match.decidedByPenalties = periodFlags.decidedByPenalties;
+  match.periodLabel = periodFlags.periodLabel;
 
   const stats = extractStats(summary, comp);
   if (stats) match.stats = stats;

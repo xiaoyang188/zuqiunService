@@ -75,7 +75,7 @@ async function queryByScheduleDay(pool, scheduleDay, leagueKey, includeYesterday
       WHERE (
         schedule_day = ?
         OR schedule_day = ?
-        OR status IN ('LIVE', 'HT')
+        OR status IN ('LIVE', 'HT', 'ET', 'PEN')
       )`;
     params.push(scheduleDay, yesterday);
   } else {
@@ -145,7 +145,7 @@ async function findByDateRange(dateRange, leagueKey) {
         WHERE (
           (schedule_day >= ? AND schedule_day <= ?)
           OR (schedule_day IS NULL AND match_time >= ? AND match_time < ?)
-          OR (status IN ('FT', 'LIVE', 'HT') AND match_time >= ? AND match_time < ?)
+          OR (status IN ('FT', 'AET', 'LIVE', 'HT', 'ET', 'PEN') AND match_time >= ? AND match_time < ?)
         )`;
       const params = [
         dayStart,
@@ -210,7 +210,7 @@ async function findKickoffStaleMatches(limit = 40) {
   const [rows] = await pool.execute(
     `SELECT external_id, league_key, payload, status
      FROM matches
-     WHERE status IN ('NS', 'LIVE', 'HT')
+     WHERE status IN ('NS', 'LIVE', 'HT', 'ET', 'PEN')
        AND match_time >= ? AND match_time <= ?
      ORDER BY match_time DESC
      LIMIT ${Math.min(Math.max(limit, 1), 60)}`,
@@ -222,7 +222,7 @@ async function findKickoffStaleMatches(limit = 40) {
 async function findLiveMatches() {
   const pool = getPool();
   const [rows] = await pool.execute(
-    `SELECT external_id, league_key, payload, synced_at FROM matches WHERE status IN ('LIVE', 'HT')`
+    `SELECT external_id, league_key, payload, synced_at FROM matches WHERE status IN ('LIVE', 'HT', 'ET', 'PEN')`
   );
   return rows;
 }
@@ -241,7 +241,7 @@ async function findNeedingDetailEnrich(limit = 15) {
      FROM matches
      WHERE match_time >= DATE_SUB(CURDATE(), INTERVAL 3 DAY)
        AND match_time < DATE_ADD(CURDATE(), INTERVAL 2 DAY)
-     ORDER BY FIELD(status, 'LIVE', 'HT', 'NS', 'FT'), match_time DESC
+     ORDER BY FIELD(status, 'LIVE', 'ET', 'PEN', 'HT', 'NS', 'FT', 'AET'), match_time DESC
      LIMIT 80`
   );
   const need = [];
@@ -251,7 +251,10 @@ async function findNeedingDetailEnrich(limit = 15) {
     const missingStats = !payload?.stats;
     const missingEvents = !(payload?.events?.length);
     const missingLineups = !(payload?.lineups?.length);
-    if (missingStats || missingEvents || missingLineups) need.push(row);
+    const missingPenaltyDetail =
+      (payload?.decidedByPenalties || payload?.periodLabel === '点球大战') &&
+      !(payload?.penaltyShootout?.length);
+    if (missingStats || missingEvents || missingLineups || missingPenaltyDetail) need.push(row);
   }
   return need;
 }
