@@ -8,21 +8,108 @@ const ESPN_STATUS_MAP = {
   post: 'FT',
 };
 
+function isPenaltyFinished(name, detail) {
+  return (
+    /STATUS_FINAL_PEN|STATUS_AFTER_SHOOTOUT/i.test(name) ||
+    /FT-Pens|After Penalt|Pens$/i.test(detail)
+  );
+}
+
+function isExtraTimeFinished(name, detail) {
+  return (
+    /STATUS_FINAL_AET|STATUS_AFTER_EXTRA_TIME/i.test(name) ||
+    /AET|After Extra/i.test(detail)
+  );
+}
+
+function isLiveExtraTime(name, detail) {
+  return (
+    /STATUS_EXTRA_TIME|EXTRA_TIME|1ST_EXTRA|2ND_HALF_EXTRA/i.test(name) ||
+    /Extra Time|ET\b/i.test(detail)
+  );
+}
+
+function isLiveShootout(name, detail) {
+  return (
+    /STATUS_PENALT|STATUS_SHOOTOUT|SHOOTOUT/i.test(name) ||
+    /Shootout|Pens\b/i.test(detail)
+  );
+}
+
 function mapEspnStatus(status) {
   const state = status?.type?.state;
   const name = status?.type?.name || '';
   const detail = status?.type?.detail || status?.type?.shortDetail || '';
+
+  if (state === 'in') {
+    if (/half/i.test(name) || name === 'STATUS_HALFTIME') return 'HT';
+    if (isLiveShootout(name, detail)) return 'PEN';
+    if (isLiveExtraTime(name, detail)) return 'ET';
+    return 'LIVE';
+  }
+
+  if (isPenaltyFinished(name, detail)) return 'FT';
+  if (isExtraTimeFinished(name, detail)) return 'AET';
+
   if (status?.type?.completed === true) return 'FT';
   if (state === 'post') return 'FT';
   if (/full.?time|STATUS_FULL_TIME|final/i.test(name) || /^FT$/i.test(String(detail).trim())) {
     return 'FT';
   }
   if (state === 'pre') return 'NS';
-  if (state === 'in') {
-    if (/half/i.test(name) || name === 'STATUS_HALFTIME') return 'HT';
-    return 'LIVE';
-  }
   return ESPN_STATUS_MAP[state] || 'NS';
+}
+
+function parseScoreBreakdown(homeComp, awayComp) {
+  const hLines = (homeComp?.linescores || []).map((l) => Number(l.displayValue) || 0);
+  const aLines = (awayComp?.linescores || []).map((l) => Number(l.displayValue) || 0);
+  if (!hLines.length || hLines.length !== aLines.length) return null;
+
+  const regulation = {
+    home: (hLines[0] ?? 0) + (hLines[1] ?? 0),
+    away: (aLines[0] ?? 0) + (aLines[1] ?? 0),
+  };
+
+  let extraTime;
+  let penalty;
+  if (hLines.length >= 4) {
+    extraTime = {
+      home: (hLines[2] ?? 0) + (hLines[3] ?? 0),
+      away: (aLines[2] ?? 0) + (aLines[3] ?? 0),
+    };
+  }
+  if (hLines.length >= 5) {
+    penalty = { home: hLines[4] ?? 0, away: aLines[4] ?? 0 };
+  }
+
+  const aggregate = extraTime
+    ? { home: regulation.home + extraTime.home, away: regulation.away + extraTime.away }
+    : { ...regulation };
+
+  const wentToExtraTime = Boolean(extraTime && hLines.length >= 4);
+  const decidedByPenalties = Boolean(penalty && hLines.length >= 5);
+
+  if (!wentToExtraTime && !decidedByPenalties) return null;
+
+  return {
+    regulation,
+    extraTime: wentToExtraTime ? extraTime : undefined,
+    penalty: decidedByPenalties ? penalty : undefined,
+    aggregate,
+    wentToExtraTime,
+    decidedByPenalties,
+  };
+}
+
+function buildPeriodLabel(status, scoreBreakdown, statusDetail) {
+  if (status === 'ET') return '加时';
+  if (status === 'PEN') return '点球大战';
+  if (status === 'AET') return '加时完场';
+  if (scoreBreakdown?.decidedByPenalties || /FT-Pens|penalt/i.test(statusDetail || '')) {
+    return '点球大战';
+  }
+  if (scoreBreakdown?.wentToExtraTime) return '加时完场';
+  return '';
 }
 
 function parseMinute(displayClock) {
@@ -55,7 +142,9 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
   registerEvent(event.id, leagueKey, leagueSlug, comp.id);
 
   const displayClock = comp.status?.displayClock || '';
+  const statusDetail = comp.status?.type?.shortDetail || comp.status?.type?.detail || '';
   const status = mapEspnStatus(comp.status);
+  const scoreBreakdown = parseScoreBreakdown(home, away);
   const matchTime = comp.startDate || event.date;
   return {
     _id: `espn_match_${event.id}`,
@@ -74,8 +163,14 @@ function mapEventToMatch(event, leagueKey, leagueSlug) {
     status,
     matchTime,
     scheduleDay: matchTime ? scheduleDayFromInstant(matchTime) : undefined,
-    minute: status === 'LIVE' || status === 'HT' ? parseMinute(displayClock) : null,
-    statusBadge: displayClock || (status === 'HT' ? 'HT' : status === 'FT' ? 'FT' : ''),
+    minute: status === 'LIVE' || status === 'HT' || status === 'ET' || status === 'PEN'
+      ? parseMinute(displayClock)
+      : null,
+    statusBadge: displayClock || statusDetail || (status === 'HT' ? 'HT' : status === 'FT' ? 'FT' : ''),
+    periodLabel: buildPeriodLabel(status, scoreBreakdown, statusDetail),
+    scoreBreakdown: scoreBreakdown || undefined,
+    wentToExtraTime: scoreBreakdown?.wentToExtraTime || false,
+    decidedByPenalties: scoreBreakdown?.decidedByPenalties || false,
     venue: comp.venue?.fullName || '',
   };
 }
@@ -102,7 +197,7 @@ const EVENT_TYPE_LABELS = {
   'yellow-card': '黄牌',
   'red-card': '红牌',
   goal: '进球',
-  'penalty---scored': '进球',
+  'penalty---scored': '点球',
   substitution: '换人',
   foul: '犯规',
   offside: '越位',
@@ -112,15 +207,27 @@ const EVENT_TYPE_LABELS = {
   'shot-off-target': '射偏',
   out: '换下',
   'var---referee-decision-cancelled': 'VAR',
+  'end-regular-time': '常规结束',
+  'start-extra-time': '加时开始',
+  'halftime-extra-time': '加时中场',
+  'start-2nd-half-extra-time': '加时下半场',
+  'end-extra-time': '加时结束',
+  'start-shootout': '点球大战',
+  'end-match': '比赛结束',
+  'start-delay': '比赛中断',
+  'end-delay': '比赛恢复',
+  'start-2nd-half': '下半场开始',
+  halftime: '中场休息',
 };
 
 function mapEventLabel(item) {
   const type = item.type?.type || '';
   if (EVENT_TYPE_LABELS[type]) return EVENT_TYPE_LABELS[type];
-  if (item.scoringPlay) return '进球';
+  if (item.scoringPlay) return item.penaltyKick ? '点球' : '进球';
   const text = item.type?.text || '';
   if (/yellow/i.test(text)) return '黄牌';
   if (/red/i.test(text)) return '红牌';
+  if (/penalty/i.test(text)) return '点球';
   if (/goal/i.test(text)) return '进球';
   return text || '事件';
 }
@@ -134,13 +241,24 @@ function playerFromEvent(item) {
 }
 
 function mapKeyEvents(keyEvents, homeTeamId, homeLogo, awayLogo) {
-  const SKIP_TYPES = new Set(['kickoff', 'end-regular-time', 'start-period', 'end-period']);
+  const SKIP_TYPES = new Set(['kickoff', 'start-period', 'end-period']);
   return (keyEvents || [])
     .filter((e) => !SKIP_TYPES.has(e.type?.type || ''))
     .filter((e) => e.clock?.displayValue || e.text || e.shortText)
     .map((e) => {
       const isHome = String(e.team?.id) === String(homeTeamId);
       const type = e.type?.type || '';
+      const isPeriodMarker = [
+        'end-regular-time',
+        'start-extra-time',
+        'halftime-extra-time',
+        'start-2nd-half-extra-time',
+        'end-extra-time',
+        'start-shootout',
+        'end-match',
+        'halftime',
+        'start-2nd-half',
+      ].includes(type);
       return {
         id: String(e.id),
         minute: e.clock?.displayValue || '',
@@ -151,10 +269,11 @@ function mapKeyEvents(keyEvents, homeTeamId, homeLogo, awayLogo) {
         teamName: toZhName(e.team?.displayName || ''),
         isGoal: Boolean(e.scoringPlay || type.includes('scored') || type === 'goal'),
         isHome,
+        isPeriodMarker,
         sortValue: e.clock?.value ?? 0,
       };
     })
-    .filter((e) => e.playerName || e.description || e.isGoal)
+    .filter((e) => e.isPeriodMarker || e.playerName || e.description || e.isGoal)
     .sort((a, b) => b.sortValue - a.sortValue)
     .map(({ sortValue, ...rest }) => rest);
 }
@@ -231,6 +350,23 @@ function parseGroupMeta(comp, homeComp, awayComp) {
   return { groupText, stageText, competitionNote: altNote };
 }
 
+function mapPenaltyShootout(shootout, homeTeamId, homeLogo, awayLogo, homeName, awayName) {
+  if (!Array.isArray(shootout) || !shootout.length) return undefined;
+  return shootout.map((side) => {
+    const isHome = String(side.id) === String(homeTeamId);
+    return {
+      teamName: isHome ? homeName : awayName,
+      teamLogo: isHome ? homeLogo : awayLogo,
+      isHome,
+      shots: (side.shots || []).map((s) => ({
+        player: s.player || '',
+        didScore: Boolean(s.didScore),
+        shotNumber: Number(s.shotNumber) || 0,
+      })),
+    };
+  });
+}
+
 function mapSummaryToMatch(summary, leagueKey) {
   const header = summary.header;
   const comp = header.competitions?.[0];
@@ -268,6 +404,14 @@ function mapSummaryToMatch(summary, leagueKey) {
     comp.status?.type?.detail ||
     match.statusBadge ||
     '';
+  const statusDetail = comp.status?.type?.shortDetail || comp.status?.type?.detail || '';
+  const scoreBreakdown = parseScoreBreakdown(homeComp, awayComp);
+  if (scoreBreakdown) {
+    match.scoreBreakdown = scoreBreakdown;
+    match.wentToExtraTime = scoreBreakdown.wentToExtraTime;
+    match.decidedByPenalties = scoreBreakdown.decidedByPenalties;
+  }
+  match.periodLabel = buildPeriodLabel(match.status, scoreBreakdown, statusDetail);
 
   const stats = extractStats(summary, comp);
   if (stats) match.stats = stats;
@@ -281,6 +425,14 @@ function mapSummaryToMatch(summary, leagueKey) {
   match.events = events;
   match.highlight = pickHighlight(events);
   match.lineups = mapLineups(summary.rosters);
+  match.penaltyShootout = mapPenaltyShootout(
+    summary.shootout,
+    homeComp?.team?.id,
+    match.homeTeamLogo,
+    match.awayTeamLogo,
+    match.homeTeamName,
+    match.awayTeamName
+  );
 
   return match;
 }
@@ -376,7 +528,7 @@ function mapTeam(raw, leagueKey) {
 }
 
 function sortMatches(list) {
-  const order = { LIVE: 0, HT: 1, NS: 2, FT: 3, POSTPONED: 4 };
+  const order = { LIVE: 0, ET: 0, PEN: 0, HT: 1, NS: 2, FT: 3, AET: 3, POSTPONED: 4 };
   return [...list].sort((a, b) => {
     const sa = order[a.status] ?? 9;
     const sb = order[b.status] ?? 9;

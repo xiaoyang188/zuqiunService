@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const compression = require('compression');
 const cors = require('cors');
 const https = require('https');
 const http = require('http');
@@ -15,6 +16,7 @@ const { isWechatConfigured, getReminderTemplateId } = require('./wechat/wechatSe
 const PORT = Number(process.env.PORT) || 3000;
 const app = express();
 
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 

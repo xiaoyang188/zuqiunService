@@ -14,6 +14,7 @@
     "reminder:once": "node src/scripts/send-reminder-once.js"
   },
   "dependencies": {
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
