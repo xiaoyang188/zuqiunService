@@ -40,10 +40,37 @@ async function findByToken(token) {
 async function findById(userId) {
   const pool = getPool();
   const [rows] = await pool.execute(
-    `SELECT id, openid FROM users WHERE id = ? LIMIT 1`,
+    `SELECT id, openid, nickname, avatar_url FROM users WHERE id = ? LIMIT 1`,
     [userId]
   );
   return rows[0] || null;
 }
 
-module.exports = { upsertByOpenid, findByToken, findById };
+function toProfile(row) {
+  return {
+    nickname: row?.nickname || '',
+    avatarUrl: row?.avatar_url || '',
+  };
+}
+
+async function getProfile(userId) {
+  const pool = getPool();
+  const [rows] = await pool.execute(
+    `SELECT nickname, avatar_url FROM users WHERE id = ? LIMIT 1`,
+    [userId]
+  );
+  return toProfile(rows[0]);
+}
+
+async function updateProfile(userId, { nickname, avatarUrl }) {
+  const pool = getPool();
+  const safeNickname = String(nickname ?? '').trim().slice(0, 32);
+  const safeAvatar = String(avatarUrl ?? '').trim().slice(0, 512);
+  await pool.execute(
+    `UPDATE users SET nickname = ?, avatar_url = ?, updated_at = NOW() WHERE id = ?`,
+    [safeNickname, safeAvatar, userId]
+  );
+  return getProfile(userId);
+}
+
+module.exports = { upsertByOpenid, findByToken, findById, getProfile, updateProfile };

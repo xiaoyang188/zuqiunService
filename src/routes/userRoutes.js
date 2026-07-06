@@ -102,6 +102,29 @@ router.post('/auth/login', dbRequired, async (req, res) => {
 const userApi = express.Router();
 userApi.use(requireAuth);
 
+/** GET /api/user/profile */
+userApi.get('/profile', async (req, res) => {
+  try {
+    const profile = await userRepo.getProfile(req.user.id);
+    res.json(ok(profile));
+  } catch (e) {
+    res.status(500).json(fail(e.message || '获取资料失败'));
+  }
+});
+
+/** POST /api/user/profile  { nickname?, avatarUrl? } */
+userApi.post('/profile', async (req, res) => {
+  try {
+    const profile = await userRepo.updateProfile(req.user.id, {
+      nickname: req.body?.nickname,
+      avatarUrl: req.body?.avatarUrl,
+    });
+    res.json(ok(profile));
+  } catch (e) {
+    res.status(500).json(fail(e.message || '保存资料失败'));
+  }
+});
+
 /** GET /api/user/follows */
 userApi.get('/follows', async (req, res) => {
   try {

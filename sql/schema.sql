@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS sync_log (
 CREATE TABLE IF NOT EXISTS users (
   id               BIGINT AUTO_INCREMENT PRIMARY KEY,
   openid           VARCHAR(64)  NOT NULL COMMENT '微信 openid',
+  nickname         VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '昵称',
+  avatar_url       VARCHAR(512) NOT NULL DEFAULT '' COMMENT '头像 URL',
   token            VARCHAR(64)  NOT NULL COMMENT '登录 token，Bearer 鉴权',
   token_expires_at DATETIME     NOT NULL,
   created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
