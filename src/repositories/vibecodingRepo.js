@@ -1,6 +1,6 @@
 const { getPool } = require('../db');
 
-function mapRow(row) {
+function mapRow(row, opts = {}) {
   if (!row) return null;
   let tags = [];
   if (row.tags) {
@@ -10,7 +10,8 @@ function mapRow(row) {
       tags = [];
     }
   }
-  return {
+
+  const base = {
     id: row.id,
     type: row.type,
     source: row.source,
@@ -31,23 +32,47 @@ function mapRow(row) {
     syncedAt: row.synced_at ? new Date(row.synced_at).toISOString() : null,
     isFeatured: Boolean(row.is_featured),
   };
+
+  if (opts.includeContent) {
+    base.content = row.content || '';
+    base.contentZh = row.content_zh || '';
+    base.contentFormat = row.content_format || '';
+    base.contentStatus = row.content_status || 'pending';
+    base.contentFetchedAt = row.content_fetched_at
+      ? new Date(row.content_fetched_at).toISOString()
+      : null;
+  }
+
+  return base;
 }
 
 async function upsertItem(item) {
   const pool = getPool();
   if (!pool) return null;
 
+  const touchContent = item.updateContent === true;
   const tagsJson = item.tags ? JSON.stringify(item.tags) : null;
+
+  const contentUpdates = touchContent
+    ? `content = IF(VALUES(content) IS NOT NULL AND VALUES(content) != '', VALUES(content), content),
+       content_zh = IF(VALUES(content_zh) IS NOT NULL AND VALUES(content_zh) != '', VALUES(content_zh), content_zh),
+       content_format = IF(VALUES(content_format) != '', VALUES(content_format), content_format),
+       content_status = IF(VALUES(content_status) != 'pending', VALUES(content_status), content_status),
+       content_fetched_at = IF(VALUES(content_fetched_at) IS NOT NULL, VALUES(content_fetched_at), content_fetched_at),`
+    : '';
+
   await pool.execute(
     `INSERT INTO vibecoding_items
-      (type, source, external_id, title, title_zh, summary, summary_zh, url, image_url, author,
-       score, comment_count, tags, published_at, synced_at, is_featured, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 'active')
+      (type, source, external_id, title, title_zh, summary, summary_zh,
+       content, content_zh, content_format, content_status, content_fetched_at,
+       url, image_url, author, score, comment_count, tags, published_at, synced_at, is_featured, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 'active')
      ON DUPLICATE KEY UPDATE
        title = VALUES(title),
        title_zh = IF(VALUES(title_zh) != '', VALUES(title_zh), title_zh),
-       summary = VALUES(summary),
+       summary = IF(VALUES(summary) != '', VALUES(summary), summary),
        summary_zh = IF(VALUES(summary_zh) != '', VALUES(summary_zh), summary_zh),
+       ${contentUpdates}
        url = VALUES(url),
        image_url = IF(VALUES(image_url) != '', VALUES(image_url), image_url),
        author = VALUES(author),
@@ -65,6 +90,11 @@ async function upsertItem(item) {
       item.titleZh || '',
       item.summary || '',
       item.summaryZh || '',
+      touchContent ? item.content || null : null,
+      touchContent ? item.contentZh || null : null,
+      touchContent ? item.contentFormat || '' : '',
+      touchContent ? item.contentStatus || 'pending' : 'pending',
+      touchContent ? item.contentFetchedAt || null : null,
       item.url || '',
       item.imageUrl || '',
       item.author || '',
@@ -76,6 +106,19 @@ async function upsertItem(item) {
     ]
   );
   return getBySourceExternal(item.source, item.externalId);
+}
+
+async function getContentMeta(source, externalId) {
+  const pool = getPool();
+  if (!pool) return null;
+  const [rows] = await pool.execute(
+    `SELECT content, content_zh, content_status, content_format, content_fetched_at, summary
+     FROM vibecoding_items
+     WHERE source = ? AND external_id = ? AND status = 'active'
+     LIMIT 1`,
+    [source, externalId]
+  );
+  return rows[0] || null;
 }
 
 async function getBySourceExternal(source, externalId) {
@@ -97,7 +140,7 @@ async function getById(id) {
     `SELECT * FROM vibecoding_items WHERE id = ? AND status = 'active' LIMIT 1`,
     [id]
   );
-  return mapRow(rows[0]);
+  return mapRow(rows[0], { includeContent: true });
 }
 
 async function listItems({ type, source, page = 1, limit = 20, sort = 'score' }) {
@@ -142,7 +185,7 @@ async function listItems({ type, source, page = 1, limit = 20, sort = 'score' })
   );
 
   return {
-    items: rows.map(mapRow),
+    items: rows.map((row) => mapRow(row, { includeContent: false })),
     total,
     page: safePage,
     limit: safeLimit,
@@ -164,6 +207,7 @@ module.exports = {
   upsertItem,
   getById,
   getBySourceExternal,
+  getContentMeta,
   listItems,
   writeSyncLog,
 };

@@ -12,14 +12,18 @@
     "db:migrate:schedule-day": "node src/scripts/migrate-schedule-day.js",
     "db:migrate:vibecoding": "node src/scripts/migrate-vibecoding.js",
     "db:migrate:vibecoding-i18n": "node src/scripts/migrate-vibecoding-i18n.js",
+    "db:migrate:vibecoding-content": "node src/scripts/migrate-vibecoding-content.js",
     "sync:once": "node src/scripts/sync-once.js",
     "reminder:once": "node src/scripts/send-reminder-once.js"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "compression": "^1.8.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
-    "mysql2": "^3.11.0"
+    "jsdom": "^26.1.0",
+    "mysql2": "^3.11.0",
+    "turndown": "^7.2.0"
   }
 }

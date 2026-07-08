@@ -149,6 +149,36 @@ async function translateToZh(text) {
   return '';
 }
 
+/** 长文分段翻译（VIBECODING_TRANSLATE_CONTENT=true 时启用） */
+async function translateContentToZh(text) {
+  if (process.env.VIBECODING_TRANSLATE_CONTENT !== 'true') return '';
+  const input = String(text || '').trim();
+  if (!input) return '';
+
+  const chunks = [];
+  const paragraphs = input.split(/\n{2,}/);
+  let buffer = '';
+
+  for (const para of paragraphs) {
+    if (Buffer.byteLength(`${buffer}\n\n${para}`, 'utf8') > 3800 && buffer) {
+      chunks.push(buffer);
+      buffer = para;
+    } else {
+      buffer = buffer ? `${buffer}\n\n${para}` : para;
+    }
+  }
+  if (buffer) chunks.push(buffer);
+  if (chunks.length === 0) chunks.push(input.slice(0, 3800));
+
+  const parts = [];
+  for (const chunk of chunks) {
+    const translated = await translateToZh(chunk);
+    parts.push(translated || chunk);
+    await sleep(120);
+  }
+  return parts.join('\n\n').trim();
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -158,6 +188,7 @@ module.exports = {
   extractDomain,
   resolveImageUrl,
   translateToZh,
+  translateContentToZh,
   resetTranslateStats,
   getTranslateStats,
   sleep,

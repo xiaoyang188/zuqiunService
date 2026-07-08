@@ -3,10 +3,16 @@ const {
   decodeHtml,
   resolveImageUrl,
   translateToZh,
+  translateContentToZh,
   resetTranslateStats,
   getTranslateStats,
   sleep,
 } = require('../utils/vibecodingMeta');
+const {
+  fetchArticleContent,
+  isExternalArticleUrl,
+  plainTextFromMarkdown,
+} = require('../utils/vibecodingArticleFetch');
 
 const HN_BASE = 'https://hacker-news.firebaseio.com/v0';
 const SHOW_HN_LIMIT = Math.min(
@@ -23,6 +29,8 @@ const NEWS_NEW_LIMIT = Math.min(
 );
 const NEWS_MAX_IDS = 80;
 const FETCH_TIMEOUT_MS = 12_000;
+const CONTENT_DELAY_MS = Number(process.env.VIBECODING_CONTENT_DELAY_MS) || 400;
+const FETCH_CONTENT_ENABLED = process.env.VIBECODING_FETCH_CONTENT !== 'false';
 
 const VIBE_KEYWORDS = [
   'ai',
@@ -124,11 +132,93 @@ async function upsertTranslatedItem(fields) {
   const summaryZh = fields.summary ? await translateToZh(fields.summary) : '';
   await sleep(120);
 
+  let contentZh = fields.contentZh || '';
+  if (!contentZh && fields.content && process.env.VIBECODING_TRANSLATE_CONTENT === 'true') {
+    contentZh = await translateContentToZh(fields.content);
+  }
+
   await vibecodingRepo.upsertItem({
     ...fields,
     titleZh,
     summaryZh,
+    contentZh,
   });
+}
+
+async function buildNewsContentFields(url, author, summary, existing) {
+  let content = existing?.content || '';
+  let contentZh = existing?.content_zh || '';
+  let contentFormat = existing?.content_format || '';
+  let contentStatus = existing?.content_status || 'pending';
+  let contentFetchedAt = existing?.content_fetched_at || null;
+  let imageUrl = resolveImageUrl(url, author);
+  let nextSummary = summary;
+
+  const alreadyOk = contentStatus === 'ok' && content && content.length > 80;
+  const shouldFetch =
+    FETCH_CONTENT_ENABLED &&
+    isExternalArticleUrl(url) &&
+    !alreadyOk &&
+    (!existing || ['pending', 'failed'].includes(contentStatus) || !content);
+
+  if (!isExternalArticleUrl(url)) {
+    return {
+      summary: nextSummary,
+      imageUrl,
+      content,
+      contentZh,
+      contentFormat,
+      contentStatus: 'skipped',
+      contentFetchedAt,
+    };
+  }
+
+  if (!shouldFetch) {
+    return {
+      summary: nextSummary,
+      imageUrl,
+      content,
+      contentZh,
+      contentFormat,
+      contentStatus,
+      contentFetchedAt,
+    };
+  }
+
+  const full = await fetchArticleContent(url);
+  contentFetchedAt = new Date();
+
+  if (full.skipped) {
+    contentStatus = 'skipped';
+  } else if (full.ok && full.body) {
+    content = full.body;
+    contentFormat = full.format || 'markdown';
+    contentStatus = 'ok';
+    if (full.ogImage) imageUrl = full.ogImage;
+    if (!nextSummary && full.ogDescription) {
+      nextSummary = full.ogDescription.slice(0, 500);
+    }
+    if (!nextSummary && content) {
+      nextSummary = plainTextFromMarkdown(content).slice(0, 500);
+    }
+  } else {
+    contentStatus = 'failed';
+    if (!nextSummary && full.ogDescription) {
+      nextSummary = full.ogDescription.slice(0, 500);
+    }
+  }
+
+  await sleep(CONTENT_DELAY_MS);
+
+  return {
+    summary: nextSummary,
+    imageUrl,
+    content,
+    contentZh,
+    contentFormat,
+    contentStatus,
+    contentFetchedAt,
+  };
 }
 
 async function syncShowHnOnce() {
@@ -210,17 +300,30 @@ async function syncHnNewsOnce() {
         if (!item || !isAiNewsItem(item)) continue;
 
         const title = decodeHtml(item.title);
-        const summary = stripHtml(item.text);
+        let summary = stripHtml(item.text);
         const url = item.url || `https://news.ycombinator.com/item?id=${item.id}`;
+        const existing = await vibecodingRepo.getContentMeta('hn', String(item.id));
+        const contentFields = await buildNewsContentFields(
+          url,
+          item.by || '',
+          summary,
+          existing
+        );
 
         await upsertTranslatedItem({
           type: 'news',
           source: 'hn',
           externalId: String(item.id),
           title,
-          summary,
+          summary: contentFields.summary,
           url,
-          imageUrl: resolveImageUrl(url, item.by || ''),
+          imageUrl: contentFields.imageUrl,
+          content: contentFields.content,
+          contentZh: contentFields.contentZh,
+          contentFormat: contentFields.contentFormat,
+          contentStatus: contentFields.contentStatus,
+          contentFetchedAt: contentFields.contentFetchedAt,
+          updateContent: true,
           author: item.by || '',
           score: item.score || 0,
           commentCount: item.descendants || 0,
