@@ -15,8 +15,12 @@ function mapRow(row) {
     type: row.type,
     source: row.source,
     externalId: row.external_id,
-    title: row.title,
-    summary: row.summary || '',
+    title: row.title_zh || row.title,
+    titleEn: row.title,
+    titleZh: row.title_zh || '',
+    summary: row.summary_zh || row.summary || '',
+    summaryEn: row.summary || '',
+    summaryZh: row.summary_zh || '',
     url: row.url,
     imageUrl: row.image_url || '',
     author: row.author || '',
@@ -36,14 +40,16 @@ async function upsertItem(item) {
   const tagsJson = item.tags ? JSON.stringify(item.tags) : null;
   await pool.execute(
     `INSERT INTO vibecoding_items
-      (type, source, external_id, title, summary, url, image_url, author,
+      (type, source, external_id, title, title_zh, summary, summary_zh, url, image_url, author,
        score, comment_count, tags, published_at, synced_at, is_featured, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 'active')
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, 'active')
      ON DUPLICATE KEY UPDATE
        title = VALUES(title),
+       title_zh = IF(VALUES(title_zh) != '', VALUES(title_zh), title_zh),
        summary = VALUES(summary),
+       summary_zh = IF(VALUES(summary_zh) != '', VALUES(summary_zh), summary_zh),
        url = VALUES(url),
-       image_url = VALUES(image_url),
+       image_url = IF(VALUES(image_url) != '', VALUES(image_url), image_url),
        author = VALUES(author),
        score = VALUES(score),
        comment_count = VALUES(comment_count),
@@ -56,7 +62,9 @@ async function upsertItem(item) {
       item.source,
       item.externalId,
       item.title,
+      item.titleZh || '',
       item.summary || '',
+      item.summaryZh || '',
       item.url || '',
       item.imageUrl || '',
       item.author || '',

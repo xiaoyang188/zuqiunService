@@ -11,6 +11,7 @@
     "db:migrate:reminder": "node src/scripts/migrate-reminder.js",
     "db:migrate:schedule-day": "node src/scripts/migrate-schedule-day.js",
     "db:migrate:vibecoding": "node src/scripts/migrate-vibecoding.js",
+    "db:migrate:vibecoding-i18n": "node src/scripts/migrate-vibecoding-i18n.js",
     "sync:once": "node src/scripts/sync-once.js",
     "reminder:once": "node src/scripts/send-reminder-once.js"
   },

@@ -1,4 +1,10 @@
 const vibecodingRepo = require('../repositories/vibecodingRepo');
+const {
+  decodeHtml,
+  resolveImageUrl,
+  translateToZh,
+  sleep,
+} = require('../utils/vibecodingMeta');
 
 const HN_BASE = 'https://hacker-news.firebaseio.com/v0';
 const SHOW_HN_LIMIT = 40;
@@ -69,16 +75,27 @@ async function syncShowHnOnce() {
         const item = await fetchHnItem(id);
         if (!item) continue;
 
+        const title = decodeHtml(item.title);
         const summary = stripHtml(item.text);
-        if (!matchesVibeKeywords(item.title, summary)) continue;
+        if (!matchesVibeKeywords(title, summary)) continue;
+
+        const url = item.url || `https://news.ycombinator.com/item?id=${item.id}`;
+        const imageUrl = resolveImageUrl(url, item.by || '');
+        const titleZh = await translateToZh(title);
+        await sleep(120);
+        const summaryZh = summary ? await translateToZh(summary) : '';
+        await sleep(120);
 
         await vibecodingRepo.upsertItem({
           type: 'project',
           source: 'hn',
           externalId: String(item.id),
-          title: item.title,
+          title,
+          titleZh,
           summary,
-          url: item.url || `https://news.ycombinator.com/item?id=${item.id}`,
+          summaryZh,
+          url,
+          imageUrl,
           author: item.by || '',
           score: item.score || 0,
           commentCount: item.descendants || 0,
