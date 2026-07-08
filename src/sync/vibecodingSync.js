@@ -9,7 +9,10 @@ const {
 } = require('../utils/vibecodingMeta');
 
 const HN_BASE = 'https://hacker-news.firebaseio.com/v0';
-const SHOW_HN_LIMIT = 40;
+const SHOW_HN_LIMIT = Math.min(
+  Math.max(Number(process.env.VIBECODING_SHOW_HN_LIMIT) || 120, 1),
+  500
+);
 const FETCH_TIMEOUT_MS = 12_000;
 
 const VIBE_KEYWORDS = [
@@ -119,7 +122,7 @@ async function syncShowHnOnce() {
 
     await vibecodingRepo.writeSyncLog('hn', 'ok', count, logHint, startedAt);
     console.log(
-      `[vibecoding] HN Show 同步完成，写入 ${count} 条，翻译 ok=${tStats.ok} fail=${tStats.fail}`
+      `[vibecoding] HN Show 同步完成，扫描 ${SHOW_HN_LIMIT} 条，写入 ${count} 条，翻译 ok=${tStats.ok} fail=${tStats.fail}`
     );
     if (tStats.fail > 0) {
       console.warn(`[vibecoding] 翻译告警: ${tStats.lastError}`);
