@@ -17,6 +17,7 @@ const dataService = require('./dataService');
 const { startScheduler } = require('./sync/scheduler');
 const { startWarmup, TTL: WARMUP_TTL } = require('./warmup');
 const userRoutes = require('./routes/userRoutes');
+const vibecodingRoutes = require('./routes/vibecodingRoutes');
 const { isWechatConfigured, getReminderTemplateId } = require('./wechat/wechatService');
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -286,6 +287,7 @@ app.get('/api/players/:id', async (req, res) => {
 });
 
 app.use('/api', userRoutes);
+app.use('/api', vibecodingRoutes);
 
 app.listen(PORT, () => {
   console.log(`足球赛况 API  http://127.0.0.1:${PORT}`);

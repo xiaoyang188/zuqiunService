@@ -9,6 +9,7 @@ const {
   syncAllOnce,
 } = require('./syncService');
 const { sendReminderOnce } = require('./sendReminder');
+const { syncVibecodingOnce } = require('./vibecodingSync');
 const { isWechatConfigured, getReminderTemplateId } = require('../wechat/wechatService');
 
 const timers = [];
@@ -25,6 +26,7 @@ function startScheduler() {
   const playerStatsMs = Number(process.env.SYNC_PLAYER_STATS_MS) || standingsMs;
   const teamsMs = Number(process.env.SYNC_TEAMS_MS) || 24 * 60 * 60 * 1000;
   const reminderMs = Number(process.env.REMINDER_SEND_MS) || 5 * 60 * 1000;
+  const vibecodingMs = Number(process.env.VIBECODING_SYNC_MS) || 30 * 60 * 1000;
 
   console.log('[sync] 启动定时同步');
 
@@ -38,6 +40,10 @@ function startScheduler() {
   timers.push(setInterval(() => syncStandingsOnce(), standingsMs));
   timers.push(setInterval(() => syncPlayerStatsOnce(), playerStatsMs));
   timers.push(setInterval(() => syncTeamsOnce(), teamsMs));
+
+  console.log(`[vibecoding] 已启用，间隔 ${vibecodingMs}ms`);
+  syncVibecodingOnce().catch((e) => console.warn('[vibecoding] 首次同步失败:', e.message));
+  timers.push(setInterval(() => syncVibecodingOnce(), vibecodingMs));
 
   if (isWechatConfigured() && getReminderTemplateId()) {
     console.log(`[sendReminder] 已启用，间隔 ${reminderMs}ms`);
