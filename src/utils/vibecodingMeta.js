@@ -1,5 +1,7 @@
 const FETCH_TIMEOUT_MS = 10_000;
 
+const translateStats = { ok: 0, fail: 0, lastError: '' };
+
 function decodeHtml(text) {
   return String(text || '')
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
@@ -58,33 +60,93 @@ function resolveImageUrl(url, author) {
   }
 }
 
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal, ...options });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function translateViaGoogle(input) {
+  const q = encodeURIComponent(input.slice(0, 450));
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=${q}`;
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const data = await res.json();
+  if (!Array.isArray(data?.[0])) throw new Error('empty response');
+
+  const text = data[0]
+    .map((part) => part?.[0])
+    .filter(Boolean)
+    .join('')
+    .trim();
+  if (!text) throw new Error('empty text');
+  return text;
+}
+
+/** 国内服务器 fallback，无需 API Key（有日配额） */
+async function translateViaMyMemory(input) {
+  const q = encodeURIComponent(input.slice(0, 480));
+  const url = `https://api.mymemory.translated.net/get?q=${q}&langpair=en|zh-CN`;
+  const res = await fetchWithTimeout(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const data = await res.json();
+  if (data.responseStatus !== 200) {
+    throw new Error(`status ${data.responseStatus}`);
+  }
+
+  const text = String(data.responseData?.translatedText || '').trim();
+  if (!text) throw new Error('empty text');
+  if (text.includes('MYMEMORY WARNING')) {
+    throw new Error('daily quota exceeded');
+  }
+  return text;
+}
+
+function resetTranslateStats() {
+  translateStats.ok = 0;
+  translateStats.fail = 0;
+  translateStats.lastError = '';
+}
+
+function getTranslateStats() {
+  return { ...translateStats };
+}
+
 async function translateToZh(text) {
   const input = decodeHtml(String(text || '').trim());
   if (!input) return '';
   if (process.env.VIBECODING_TRANSLATE === 'false') return '';
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const providers = [
+    { name: 'google', fn: translateViaGoogle },
+    { name: 'mymemory', fn: translateViaMyMemory },
+  ];
 
-  try {
-    const q = encodeURIComponent(input.slice(0, 450));
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=${q}`;
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return '';
-
-    const data = await res.json();
-    if (!Array.isArray(data?.[0])) return '';
-
-    return data[0]
-      .map((part) => part?.[0])
-      .filter(Boolean)
-      .join('')
-      .trim();
-  } catch {
-    return '';
-  } finally {
-    clearTimeout(timer);
+  const errors = [];
+  for (const { name, fn } of providers) {
+    try {
+      const result = await fn(input);
+      translateStats.ok += 1;
+      return result;
+    } catch (e) {
+      const msg = `${name}: ${e.message}`;
+      errors.push(msg);
+      console.warn(`[vibecoding][translate] ${msg}`);
+    }
   }
+
+  translateStats.fail += 1;
+  translateStats.lastError = errors.join('; ');
+  console.warn(
+    `[vibecoding][translate] 全部失败，保留英文: "${input.slice(0, 48)}${input.length > 48 ? '…' : ''}"`
+  );
+  return '';
 }
 
 function sleep(ms) {
@@ -96,5 +158,7 @@ module.exports = {
   extractDomain,
   resolveImageUrl,
   translateToZh,
+  resetTranslateStats,
+  getTranslateStats,
   sleep,
 };

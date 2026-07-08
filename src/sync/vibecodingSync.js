@@ -3,6 +3,8 @@ const {
   decodeHtml,
   resolveImageUrl,
   translateToZh,
+  resetTranslateStats,
+  getTranslateStats,
   sleep,
 } = require('../utils/vibecodingMeta');
 
@@ -65,6 +67,7 @@ async function fetchHnItem(id) {
 async function syncShowHnOnce() {
   const startedAt = new Date();
   let count = 0;
+  resetTranslateStats();
 
   try {
     const ids = await fetchJson(`${HN_BASE}/showstories.json`);
@@ -108,9 +111,20 @@ async function syncShowHnOnce() {
       }
     }
 
-    await vibecodingRepo.writeSyncLog('hn', 'ok', count, '', startedAt);
-    console.log(`[vibecoding] HN Show 同步完成，写入 ${count} 条`);
-    return { ok: true, count };
+    const tStats = getTranslateStats();
+    const logHint =
+      tStats.fail > 0
+        ? `translate ok=${tStats.ok} fail=${tStats.fail}: ${tStats.lastError}`.slice(0, 512)
+        : '';
+
+    await vibecodingRepo.writeSyncLog('hn', 'ok', count, logHint, startedAt);
+    console.log(
+      `[vibecoding] HN Show 同步完成，写入 ${count} 条，翻译 ok=${tStats.ok} fail=${tStats.fail}`
+    );
+    if (tStats.fail > 0) {
+      console.warn(`[vibecoding] 翻译告警: ${tStats.lastError}`);
+    }
+    return { ok: true, count, translate: tStats };
   } catch (e) {
     await vibecodingRepo.writeSyncLog('hn', 'error', count, e.message, startedAt);
     console.error('[vibecoding] HN 同步失败:', e.message);
