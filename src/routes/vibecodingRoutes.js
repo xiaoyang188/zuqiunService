@@ -63,9 +63,15 @@ router.get('/vibecoding/items/:id', dbRequired, async (req, res) => {
   }
 });
 
-router.post('/vibecoding/sync', dbRequired, async (_req, res) => {
+router.post('/vibecoding/sync', dbRequired, async (req, res) => {
+  const scope = String(req.query.scope || 'all');
+  if (!['all', 'project', 'news'].includes(scope)) {
+    res.status(400).json(fail('scope 无效，可选 all / project / news'));
+    return;
+  }
+
   try {
-    const result = await syncVibecodingOnce();
+    const result = await syncVibecodingOnce(scope);
     if (!result.ok) {
       res.status(500).json(fail(result.error || '同步失败'));
       return;
