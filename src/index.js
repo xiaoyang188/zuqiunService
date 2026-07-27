@@ -147,7 +147,26 @@ app.get('/api/matches/today', async (_req, res) => {
 app.get('/api/schedule', async (req, res) => {
   const dateRange = req.query.dateRange || 'today';
   const league = req.query.league || '';
-  if (!['today', 'tomorrow', 'week'].includes(dateRange)) {
+  const date = String(req.query.date || '').trim();
+  const allowedRanges = ['today', 'tomorrow', 'week', 'history'];
+
+  if (date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      res.status(400).json(fail('date 无效，需 YYYY-MM-DD'));
+      return;
+    }
+    try {
+      const matches = await cacheSchedule(`day:${date}`, league, () =>
+        dataService.getSchedule('today', league || undefined, { date })
+      );
+      res.json(ok(matches));
+    } catch (e) {
+      res.status(500).json(fail(e.message || '获取赛程失败'));
+    }
+    return;
+  }
+
+  if (!allowedRanges.includes(dateRange)) {
     res.status(400).json(fail('dateRange 无效'));
     return;
   }

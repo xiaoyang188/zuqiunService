@@ -25,6 +25,15 @@ function shanghaiEspnDate(dayOffset = 0) {
   return `${year}${month}${day}`;
 }
 
+/** YYYY-MM-DD → 上海当日 00:00 */
+function parseShanghaiDay(dateStr) {
+  const m = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+08:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
 function getDateRangeBounds(dateRange) {
   const todayStart = shanghaiDayStart(0);
   if (dateRange === 'yesterday') {
@@ -39,7 +48,19 @@ function getDateRangeBounds(dateRange) {
   if (dateRange === 'week') {
     return { start: todayStart, end: shanghaiDayStart(8) };
   }
+  if (dateRange === 'history') {
+    // 近 30 天（不含今天）：历史赛果窗口
+    return { start: shanghaiDayStart(-30), end: todayStart };
+  }
   throw new Error('dateRange 无效');
+}
+
+/** 指定日历日 [day, day+1) */
+function getDayBounds(dateStr) {
+  const start = parseShanghaiDay(dateStr);
+  if (!start) throw new Error('date 无效，需 YYYY-MM-DD');
+  const end = new Date(start.getTime() + 86400000);
+  return { start, end };
 }
 
 /** ESPN scoreboard dates 对应的赛程日（上海 YYYY-MM-DD），与开球 UTC 转上海日历日可能不一致 */
@@ -123,6 +144,8 @@ function scheduleDayFromInstant(isoOrDate) {
 
 module.exports = {
   getDateRangeBounds,
+  getDayBounds,
+  parseShanghaiDay,
   toMysqlDatetime,
   shanghaiDayStart,
   shanghaiEspnDate,

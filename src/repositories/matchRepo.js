@@ -2,6 +2,7 @@ const { getPool } = require('../db');
 const { mergeMatchData } = require('../matchMerge');
 const {
   getDateRangeBounds,
+  getDayBounds,
   toMysqlDatetime,
   scheduleDayForRange,
   scheduleDayBoundsForRange,
@@ -177,6 +178,10 @@ async function findByDateRange(dateRange, leagueKey) {
     return rows.map(rowToMatch).filter(Boolean);
   }
 
+  if (dateRange === 'history') {
+    return findHistoryMatches(leagueKey);
+  }
+
   const { start, end } = getDateRangeBounds(dateRange);
   let sql = `SELECT payload FROM matches WHERE match_time >= ? AND match_time < ?`;
   const params = [toMysqlDatetime(start), toMysqlDatetime(end)];
@@ -186,6 +191,87 @@ async function findByDateRange(dateRange, leagueKey) {
   }
   sql += ` ORDER BY match_time ASC`;
   const [rows] = await pool.execute(sql, params);
+  return rows.map(rowToMatch).filter(Boolean);
+}
+
+/** 近 30 天已结束比赛（不含今天），按时间倒序 */
+async function findHistoryMatches(leagueKey, days = 30) {
+  const pool = getPool();
+  const safeDays = Math.min(Math.max(Number(days) || 30, 1), 90);
+  const { start, end } = getDateRangeBounds('history');
+  // history bounds 固定 30 天；若自定义 days 则重算
+  const startCustom =
+    safeDays === 30 ? start : new Date(end.getTime() - safeDays * 86400000);
+
+  let rows = [];
+  try {
+    let sql = `SELECT payload FROM matches
+      WHERE status IN ('FT', 'AET')
+        AND (
+          (schedule_day IS NOT NULL AND schedule_day >= ? AND schedule_day < ?)
+          OR (schedule_day IS NULL AND match_time >= ? AND match_time < ?)
+        )`;
+    const dayStart = toMysqlDatetime(startCustom).slice(0, 10);
+    const dayEnd = toMysqlDatetime(end).slice(0, 10);
+    const params = [
+      dayStart,
+      dayEnd,
+      toMysqlDatetime(startCustom),
+      toMysqlDatetime(end),
+    ];
+    if (leagueKey) {
+      sql += ` AND league_key = ?`;
+      params.push(leagueKey);
+    }
+    sql += ` ORDER BY match_time DESC LIMIT 200`;
+    [rows] = await pool.execute(sql, params);
+  } catch (e) {
+    if (!/schedule_day|Unknown column/i.test(e.message)) throw e;
+    let sql = `SELECT payload FROM matches
+      WHERE status IN ('FT', 'AET')
+        AND match_time >= ? AND match_time < ?`;
+    const params = [toMysqlDatetime(startCustom), toMysqlDatetime(end)];
+    if (leagueKey) {
+      sql += ` AND league_key = ?`;
+      params.push(leagueKey);
+    }
+    sql += ` ORDER BY match_time DESC LIMIT 200`;
+    [rows] = await pool.execute(sql, params);
+  }
+  return rows.map(rowToMatch).filter(Boolean);
+}
+
+/** 指定日历日全部比赛 */
+async function findByCalendarDate(dateStr, leagueKey) {
+  const pool = getPool();
+  const { start, end } = getDayBounds(dateStr);
+  const day = String(dateStr).slice(0, 10);
+
+  let rows = [];
+  try {
+    let sql = `SELECT payload FROM matches
+      WHERE (
+        schedule_day = ?
+        OR (schedule_day IS NULL AND match_time >= ? AND match_time < ?)
+      )`;
+    const params = [day, toMysqlDatetime(start), toMysqlDatetime(end)];
+    if (leagueKey) {
+      sql += ` AND league_key = ?`;
+      params.push(leagueKey);
+    }
+    sql += ` ORDER BY match_time ASC`;
+    [rows] = await pool.execute(sql, params);
+  } catch (e) {
+    if (!/schedule_day|Unknown column/i.test(e.message)) throw e;
+    let sql = `SELECT payload FROM matches WHERE match_time >= ? AND match_time < ?`;
+    const params = [toMysqlDatetime(start), toMysqlDatetime(end)];
+    if (leagueKey) {
+      sql += ` AND league_key = ?`;
+      params.push(leagueKey);
+    }
+    sql += ` ORDER BY match_time ASC`;
+    [rows] = await pool.execute(sql, params);
+  }
   return rows.map(rowToMatch).filter(Boolean);
 }
 
@@ -320,6 +406,8 @@ module.exports = {
   upsertMatch,
   upsertMatches,
   findByDateRange,
+  findHistoryMatches,
+  findByCalendarDate,
   findToday,
   findByExternalId,
   findLiveMatches,

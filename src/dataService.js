@@ -27,9 +27,20 @@ async function getTodayMatches() {
   return sortMatches(raw.map(mapScheduleItem).filter(Boolean));
 }
 
-async function getSchedule(dateRange, leagueKey) {
+async function getSchedule(dateRange, leagueKey, options = {}) {
   if (isDbEnabled()) {
+    if (options.date) {
+      return sortMatches(
+        await matchRepo.findByCalendarDate(options.date, leagueKey || undefined)
+      );
+    }
+    if (dateRange === 'history') {
+      return matchRepo.findHistoryMatches(leagueKey || undefined);
+    }
     return sortMatches(await matchRepo.findByDateRange(dateRange, leagueKey || undefined));
+  }
+  if (options.date || dateRange === 'history') {
+    return [];
   }
   const raw = await espn.fetchSchedule(dateRange, leagueKey || undefined);
   return sortMatches(raw.map(mapScheduleItem).filter(Boolean));
