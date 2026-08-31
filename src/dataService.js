@@ -9,6 +9,7 @@ const teamRepo = require('./repositories/teamRepo');
 const playerRankingRepo = require('./repositories/playerRankingRepo');
 const playerRepo = require('./repositories/playerRepo');
 const { getLeaguePrimarySource, APP_LEAGUES, getLeagueKeyBySlug } = require('./leagueCodes');
+const { getDateRangeBounds, getDayBounds } = require('./dateRange');
 const {
   mapScheduleItem,
   mapSummaryToMatch,
@@ -35,9 +36,101 @@ function looksLikeDongqiuId(id) {
   return /^50\d{6,}$/.test(s) || /^5\d{7,}$/.test(s);
 }
 
+/** 内存短缓存，避免首页 week+history 连打懂球 */
+const dongqiuMatchCache = { at: 0, leagueKey: '', list: [] };
+
+async function fetchDongqiuLeagueMatches(leagueKey) {
+  if (
+    dongqiuMatchCache.leagueKey === leagueKey &&
+    Date.now() - dongqiuMatchCache.at < 90_000 &&
+    dongqiuMatchCache.list.length
+  ) {
+    return dongqiuMatchCache.list;
+  }
+
+  const map = new Map();
+  try {
+    const tab = await dongqiu.fetchLeagueTabMatches(leagueKey);
+    for (const item of tab) {
+      const mapped = dongqiuMapper.mapMatchFromTab(item, leagueKey);
+      if (mapped) map.set(mapped._id, mapped);
+    }
+  } catch {
+    /* tab optional */
+  }
+  try {
+    const recent = await dongqiu.fetchRecentSchedule(leagueKey);
+    for (const item of recent) {
+      const mapped = dongqiuMapper.mapMatchFromSchedule(item, leagueKey);
+      if (mapped) map.set(mapped._id, mapped);
+    }
+  } catch {
+    /* schedule optional */
+  }
+
+  const list = Array.from(map.values());
+  dongqiuMatchCache.at = Date.now();
+  dongqiuMatchCache.leagueKey = leagueKey;
+  dongqiuMatchCache.list = list;
+
+  if (isDbEnabled() && list.length) {
+    matchRepo.upsertMatches(list).catch((e) => {
+      console.warn('[dataService] dongqiu match upsert failed:', e.message);
+    });
+  }
+  return list;
+}
+
+function filterMatchesByRange(matches, dateRange, options = {}) {
+  if (options.date) {
+    const { start, end } = getDayBounds(options.date);
+    const a = start.getTime();
+    const b = end.getTime();
+    return matches.filter((m) => {
+      const t = new Date(m.matchTime).getTime();
+      return Number.isFinite(t) && t >= a && t < b;
+    });
+  }
+  if (!dateRange) return matches;
+  const { start, end } = getDateRangeBounds(dateRange);
+  const a = start.getTime();
+  const b = end.getTime();
+  return matches.filter((m) => {
+    const t = new Date(m.matchTime).getTime();
+    if (!Number.isFinite(t) || t < a || t >= b) return false;
+    if (dateRange === 'history') {
+      return m.status === 'FT' || m.status === 'AET' || m.status === 'PEN';
+    }
+    return true;
+  });
+}
+
+async function getScheduleFromDongqiu(leagueKey, dateRange, options = {}) {
+  const all = await fetchDongqiuLeagueMatches(leagueKey);
+  return sortMatches(filterMatchesByRange(all, dateRange, options));
+}
+
+function mergeMatchLists(...lists) {
+  const map = new Map();
+  lists.flat().forEach((m) => {
+    if (m?._id) map.set(m._id, m);
+  });
+  return sortMatches(Array.from(map.values()));
+}
+
 async function getTodayMatches() {
   if (isDbEnabled()) {
-    return sortMatches(await matchRepo.findToday());
+    let list = sortMatches(await matchRepo.findToday());
+    const hasCsl = list.some((m) => m.league === 'Chinese Super League');
+    if (!hasCsl && prefersDongqiu('Chinese Super League')) {
+      try {
+        const live = await getScheduleFromDongqiu('Chinese Super League', 'today');
+        if (live.length) list = mergeMatchLists(list, live);
+      } catch {
+        /* keep db */
+      }
+    }
+    return list;
   }
   try {
     if (prefersDongqiu('Chinese Super League')) {
@@ -54,24 +147,65 @@ async function getTodayMatches() {
 
 async function getSchedule(dateRange, leagueKey, options = {}) {
   if (isDbEnabled()) {
+    let list;
     if (options.date) {
-      return sortMatches(
+      list = sortMatches(
         await matchRepo.findByCalendarDate(options.date, leagueKey || undefined)
       );
+    } else if (dateRange === 'history') {
+      list = await matchRepo.findHistoryMatches(leagueKey || undefined);
+    } else {
+      list = sortMatches(await matchRepo.findByDateRange(dateRange, leagueKey || undefined));
     }
-    if (dateRange === 'history') {
-      return matchRepo.findHistoryMatches(leagueKey || undefined);
+
+    const cslKey = 'Chinese Super League';
+    const needDongqiu =
+      (leagueKey && prefersDongqiu(leagueKey)) ||
+      (!leagueKey && prefersDongqiu(cslKey));
+
+    if (needDongqiu) {
+      const targetLeague = leagueKey || cslKey;
+      const hasTarget = list.some((m) => m.league === targetLeague);
+      if (!hasTarget || (leagueKey && prefersDongqiu(leagueKey) && !list.length)) {
+        try {
+          const live = await getScheduleFromDongqiu(
+            targetLeague,
+            options.date ? null : dateRange,
+            options
+          );
+          if (leagueKey) {
+            if (live.length) return live;
+          } else if (live.length) {
+            list = mergeMatchLists(list, live);
+          }
+        } catch {
+          /* keep db */
+        }
+      }
     }
-    return sortMatches(await matchRepo.findByDateRange(dateRange, leagueKey || undefined));
+    return list;
   }
   if (options.date || dateRange === 'history') {
+    if (leagueKey && prefersDongqiu(leagueKey)) {
+      try {
+        return await getScheduleFromDongqiu(leagueKey, dateRange, options);
+      } catch {
+        return [];
+      }
+    }
+    if (!leagueKey && prefersDongqiu('Chinese Super League')) {
+      try {
+        return await getScheduleFromDongqiu('Chinese Super League', dateRange, options);
+      } catch {
+        return [];
+      }
+    }
     return [];
   }
   if (leagueKey && prefersDongqiu(leagueKey)) {
     try {
-      const raw = await dongqiu.fetchLeagueTabMatches(leagueKey);
-      const mapped = raw.map((m) => dongqiuMapper.mapMatchFromTab(m, leagueKey)).filter(Boolean);
-      if (mapped.length) return sortMatches(mapped);
+      const live = await getScheduleFromDongqiu(leagueKey, dateRange, options);
+      if (live.length) return live;
     } catch {
       /* espn fallback */
     }

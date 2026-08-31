@@ -143,11 +143,10 @@ async function fetchRecentSchedule(leagueKey = 'Chinese Super League', weeks = n
 }
 
 function guessActiveGameweeks() {
-  // 中超约 30 轮；取 15–30 覆盖赛季中后段，再加 1–5 兜底
-  const set = new Set();
-  for (let i = 15; i <= 30; i += 1) set.add(i);
-  for (let i = 1; i <= 5; i += 1) set.add(i);
-  return Array.from(set);
+  // 中超常规约 30 轮：全量拉取以覆盖近期 + 历史战报
+  const list = [];
+  for (let i = 1; i <= 30; i += 1) list.push(i);
+  return list;
 }
 
 /** 射手榜 / 助攻榜 type: goals | assists */

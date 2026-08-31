@@ -95,12 +95,14 @@ async function refreshCurrentScoreboards(leagueKeys = ALL_LEAGUE_KEYS) {
 async function refreshDongqiuCslMatches() {
   const leagueKey = 'Chinese Super League';
   let updated = 0;
+  const ids = [];
   try {
     const tab = await dongqiu.fetchLeagueTabMatches(leagueKey);
     for (const item of tab) {
       const mapped = dongqiuMapper.mapMatchFromTab(item, leagueKey);
       if (!mapped) continue;
       await matchRepo.upsertMatch(mapped);
+      ids.push(matchRepo.parseExternalId(mapped._id));
       updated += 1;
     }
     const recent = await dongqiu.fetchRecentSchedule(leagueKey);
@@ -108,12 +110,13 @@ async function refreshDongqiuCslMatches() {
       const mapped = dongqiuMapper.mapMatchFromSchedule(item, leagueKey);
       if (!mapped) continue;
       await matchRepo.upsertMatch(mapped);
+      ids.push(matchRepo.parseExternalId(mapped._id));
       updated += 1;
     }
   } catch (e) {
     console.warn('[sync] dongqiu CSL schedule failed:', e.message);
   }
-  return updated;
+  return { updated, ids };
 }
 
 async function syncScheduleOnce() {
@@ -153,11 +156,11 @@ async function syncScheduleOnce() {
         ALL_LEAGUE_KEYS.filter((k) => !prefersDongqiu(k))
       );
 
-      const dongqiuRows = await refreshDongqiuCslMatches();
+      const { updated: dongqiuRows, ids: dqIds } = await refreshDongqiuCslMatches();
 
       const syncedIds = [
         ...list.map((m) => matchRepo.parseExternalId(m._id)),
-        // dq ids 由 upsert 内部处理
+        ...dqIds,
       ];
       const prunedWindow = await matchRepo.pruneMissingInRanges(DATE_RANGES, syncedIds);
       const cutoff = shanghaiDayStart(-FINISHED_RETENTION_DAYS);
