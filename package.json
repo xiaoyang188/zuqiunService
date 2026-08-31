@@ -13,7 +13,9 @@
     "db:migrate:vibecoding": "node src/scripts/migrate-vibecoding.js",
     "db:migrate:vibecoding-i18n": "node src/scripts/migrate-vibecoding-i18n.js",
     "db:migrate:vibecoding-content": "node src/scripts/migrate-vibecoding-content.js",
+    "db:migrate:search-index": "node src/scripts/migrate-search-index.js",
     "sync:once": "node src/scripts/sync-once.js",
+    "sync:search": "node src/scripts/sync-search-once.js",
     "reminder:once": "node src/scripts/send-reminder-once.js"
   },
   "dependencies": {

@@ -19,6 +19,7 @@ const bracketRepo = require('../repositories/bracketRepo');
 const teamRepo = require('../repositories/teamRepo');
 const playerRankingRepo = require('../repositories/playerRankingRepo');
 const playerRepo = require('../repositories/playerRepo');
+const searchIndexRepo = require('../repositories/searchIndexRepo');
 const { writeSyncLog } = require('../repositories/syncLogRepo');
 const { isDbEnabled } = require('../db');
 const { shanghaiDayStart, scheduleDayForRange } = require('../dateRange');
@@ -27,18 +28,19 @@ const DATE_RANGES = ['yesterday', 'today', 'tomorrow', 'week'];
 const ALL_LEAGUE_KEYS = Object.keys(APP_LEAGUES);
 const FINISHED_RETENTION_DAYS = Number(process.env.SYNC_MATCH_RETENTION_DAYS) || 90;
 
-function prefersDongqiu(leagueKey) {
-  return getLeaguePrimarySource(leagueKey) === 'dongqiu';
-}
-
-let syncing = {
+const syncing = {
   schedule: false,
   live: false,
   standings: false,
-  teams: false,
   playerStats: false,
+  teams: false,
   details: false,
+  searchIndex: false,
 };
+
+function prefersDongqiu(leagueKey) {
+  return getLeaguePrimarySource(leagueKey) === 'dongqiu';
+}
 
 async function runJob(name, fn) {
   if (!isDbEnabled()) return { skipped: true };
@@ -382,6 +384,134 @@ async function syncTeamsOnce() {
   }
 }
 
+/** 中超球队阵容 + 射手入库搜索索引，加速 /api/search */
+async function syncSearchIndexOnce() {
+  if (syncing.searchIndex) return { skipped: true };
+  syncing.searchIndex = true;
+  try {
+    return await runJob('syncSearchIndex', async () => {
+      let total = 0;
+      const leagueKey = 'Chinese Super League';
+      const leagueLabel = '中超';
+
+      const standings = await dongqiu.fetchStandings(leagueKey);
+      const teamHits = standings.map((r) => {
+        const mapped = dongqiuMapper.mapTeamFromStanding(r, leagueKey);
+        return {
+          type: 'team',
+          id: String(mapped._id || '').replace(/^dq_team_/, ''),
+          name: mapped.name,
+          logo: mapped.logo || '',
+          subtitle: leagueLabel,
+          leagueKey,
+          leagueLabel,
+          source: 'dongqiu',
+        };
+      });
+      await searchIndexRepo.upsertHits(teamHits);
+      total += teamHits.length;
+
+      const scorersRaw = await dongqiu.fetchPersonRanking(leagueKey, 'goals');
+      const scorerHits = scorersRaw.map((row, i) => {
+        const s = dongqiuMapper.mapScorerRow(row, i);
+        return {
+          type: 'player',
+          id: s.personId,
+          name: s.name,
+          logo: s.logo || '',
+          subtitle: [s.team, leagueLabel].filter(Boolean).join(' · '),
+          leagueKey,
+          leagueLabel,
+          source: 'dongqiu',
+          team: s.team,
+        };
+      });
+      await searchIndexRepo.upsertHits(scorerHits.filter((h) => h.id && h.name));
+      total += scorerHits.length;
+
+      // 每队取一名射手作种子，拉取队友写入索引
+      const seedByTeam = new Map();
+      scorersRaw.forEach((row) => {
+        const teamId = String(row.team_id || '');
+        const personId = String(row.person_id || '');
+        if (teamId && personId && !seedByTeam.has(teamId)) {
+          seedByTeam.set(teamId, personId);
+        }
+      });
+
+      for (const personId of seedByTeam.values()) {
+        try {
+          const mates = await dongqiu.fetchPersonTeammates(personId);
+          const roster = dongqiuMapper.mapTeammatesToRoster(mates);
+          const hits = roster.map((p) => ({
+            type: 'player',
+            id: p.athleteId || p.id,
+            name: p.name,
+            logo: p.avatar || '',
+            subtitle: [leagueLabel, p.position].filter(Boolean).join(' · '),
+            leagueKey,
+            leagueLabel,
+            source: 'dongqiu',
+          }));
+          await searchIndexRepo.upsertHits(hits.filter((h) => h.id && h.name));
+          total += hits.length;
+
+    // 顺带缓存种子球员完整详情
+          try {
+            const raw = await dongqiu.fetchPersonDetail(personId);
+            const mapped = dongqiuMapper.mapPersonDetail(raw, leagueKey);
+            if (mapped) {
+              await playerRepo.upsertPlayer(personId, leagueKey, mapped);
+              await searchIndexRepo.upsertHit({
+                type: 'player',
+                id: personId,
+                name: mapped.name,
+                enName: mapped.shortName || '',
+                logo: mapped.avatar || '',
+                subtitle: [mapped.teamName, leagueLabel].filter(Boolean).join(' · '),
+                leagueKey,
+                leagueLabel,
+                source: 'dongqiu',
+              });
+            }
+          } catch {
+            /* skip detail */
+          }
+        } catch {
+          /* skip roster */
+        }
+      }
+
+      // 其它联赛：积分榜球队名入库（ESPN 侧）
+      for (const key of ALL_LEAGUE_KEYS) {
+        if (prefersDongqiu(key)) continue;
+        try {
+          const teams = await teamRepo.findByLeague(key);
+          const label = APP_LEAGUES[key]?.label || key;
+          const hits = (teams || []).map((t) => ({
+            type: 'team',
+            id: String(t._id || t.external_id || '').replace(/^(dq_team_|espn_team_)/, ''),
+            name: t.name,
+            logo: t.logo || '',
+            subtitle: label,
+            leagueKey: key,
+            leagueLabel: label,
+            source: 'espn',
+          }));
+          await searchIndexRepo.upsertHits(hits.filter((h) => h.id && h.name));
+          total += hits.length;
+        } catch {
+          /* skip */
+        }
+      }
+
+      return total;
+    });
+  } finally {
+    syncing.searchIndex = false;
+  }
+}
+
 async function syncMatchDetailsOnce() {
   if (syncing.details) return { skipped: true };
   syncing.details = true;
@@ -422,7 +552,8 @@ async function syncAllOnce() {
   const standings = await syncStandingsOnce();
   const playerStats = await syncPlayerStatsOnce();
   const teams = await syncTeamsOnce();
-  return { schedule, live, details, standings, playerStats, teams };
+  const searchIndex = await syncSearchIndexOnce();
+  return { schedule, live, details, standings, playerStats, teams, searchIndex };
 }
 
 module.exports = {
@@ -432,6 +563,7 @@ module.exports = {
   syncPlayerStatsOnce,
   syncMatchDetailsOnce,
   syncTeamsOnce,
+  syncSearchIndexOnce,
   syncMatchDetail,
   syncAllOnce,
 };

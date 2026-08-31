@@ -89,7 +89,7 @@ const TTL = {
   scorers: 300_000,
   teams: 600_000,
   player: 600_000,
-  search: 120_000,
+  search: 30_000,
   teamDetail: 300_000,
   health: 10_000,
 };

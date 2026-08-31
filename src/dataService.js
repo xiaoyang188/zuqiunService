@@ -8,6 +8,7 @@ const bracketRepo = require('./repositories/bracketRepo');
 const teamRepo = require('./repositories/teamRepo');
 const playerRankingRepo = require('./repositories/playerRankingRepo');
 const playerRepo = require('./repositories/playerRepo');
+const searchIndexRepo = require('./repositories/searchIndexRepo');
 const { getLeaguePrimarySource, APP_LEAGUES, getLeagueKeyBySlug } = require('./leagueCodes');
 const { getDateRangeBounds, getDayBounds } = require('./dateRange');
 const {
@@ -358,6 +359,43 @@ async function getPlayerDetailFromDongqiu(athleteId, leagueKey) {
   return dongqiuMapper.mapPersonDetail(raw, leagueKey || 'Chinese Super League');
 }
 
+function indexPlayerHit(player, leagueKey) {
+  if (!player?.athleteId && !player?._id) return;
+  const id = String(player.athleteId || player._id || '').replace(
+    /^(dq_player_|espn_player_)/,
+    ''
+  );
+  if (!id) return;
+  searchIndexRepo
+    .upsertHit({
+      type: 'player',
+      id,
+      name: player.name,
+      enName: player.shortName || '',
+      logo: player.avatar || '',
+      subtitle: [player.teamName, player.position].filter(Boolean).join(' · '),
+      leagueKey: leagueKey || player.league || '',
+      leagueLabel: player.leagueLabel || (leagueKey === 'Chinese Super League' ? '中超' : ''),
+      source: player.source || 'dongqiu',
+      team: player.teamName || '',
+      nationality: player.nationality || '',
+    })
+    .catch(() => {});
+}
+
+async function persistPlayer(player, leagueKey) {
+  if (!isDbEnabled() || !player) return;
+  const id = String(player.athleteId || '').replace(/^(dq_player_|espn_player_)/, '');
+  if (!id) return;
+  const key = leagueKey || player.league || 'Chinese Super League';
+  try {
+    await playerRepo.upsertPlayer(id, key, player);
+  } catch {
+    /* ignore */
+  }
+  indexPlayerHit(player, key);
+}
+
 async function getPlayerDetail(athleteId, leagueKey) {
   const id = String(athleteId).replace(/^(dq_player_|espn_player_)/, '');
 
@@ -369,7 +407,11 @@ async function getPlayerDetail(athleteId, leagueKey) {
     }
     if (!player) player = await playerRepo.findByExternalIdAny(id);
     if (!player) player = await playerRepo.findByExternalIdAny(`dq_player_${id}`);
-    if (player) return player;
+    // 旧缓存缺雷达/生涯数据时强制刷新
+    if (player?.ability?.radar?.length && player?.career?.length) {
+      indexPlayerHit(player, leagueKey || player.league);
+      return player;
+    }
   }
 
   const tryDongqiu =
@@ -378,7 +420,10 @@ async function getPlayerDetail(athleteId, leagueKey) {
   if (tryDongqiu) {
     try {
       const mapped = await getPlayerDetailFromDongqiu(id, leagueKey || 'Chinese Super League');
-      if (mapped) return mapped;
+      if (mapped) {
+        await persistPlayer(mapped, leagueKey || 'Chinese Super League');
+        return mapped;
+      }
     } catch {
       /* espn fallback */
     }
@@ -392,17 +437,17 @@ async function getPlayerDetail(athleteId, leagueKey) {
   }
   const mapped = mapAthleteDetail(raw, resolvedLeague);
   if (!mapped) throw new Error('球员不存在');
+  await persistPlayer(mapped, resolvedLeague);
   return mapped;
 }
 
-async function search(query, limit = 20) {
+async function searchLive(query, limit = 20) {
   const { expandSearchQueries } = require('./zhNames');
   const queries = expandSearchQueries(query);
   const merged = { players: [], teams: [] };
   const seenP = new Set();
   const seenT = new Set();
 
-  // 1) 懂球帝搜索（中文友好）
   for (const q of queries) {
     try {
       const raw = dongqiuMapper.mapSearchResults(await dongqiu.search(q));
@@ -413,7 +458,6 @@ async function search(query, limit = 20) {
       }
       for (const t of raw.teams || []) {
         if (!t.id || seenT.has(t.id)) continue;
-        // 过滤明显非足球噪点时可保留，交给前端
         seenT.add(t.id);
         merged.teams.push({ ...t, source: 'dongqiu' });
       }
@@ -422,7 +466,6 @@ async function search(query, limit = 20) {
     }
   }
 
-  // 2) ESPN 补充
   for (const q of queries) {
     try {
       const raw = await espn.searchSoccer(q, limit);
@@ -441,21 +484,20 @@ async function search(query, limit = 20) {
     }
   }
 
-  // 3) 中超积分榜球队中文兜底
   try {
     const csl = await getTeams('Chinese Super League');
     const kw = String(query || '').trim().toLowerCase();
     const zhKw = String(query || '').trim();
     for (const t of csl) {
-      const id = String(t._id || '').replace(/^(dq_team_|espn_team_)/, '');
-      if (!id || seenT.has(id)) continue;
+      const tid = String(t._id || '').replace(/^(dq_team_|espn_team_)/, '');
+      if (!tid || seenT.has(tid)) continue;
       const name = t.name || '';
       const hit = name.toLowerCase().includes(kw) || name.includes(zhKw);
       if (!hit) continue;
-      seenT.add(id);
+      seenT.add(tid);
       merged.teams.unshift({
         type: 'team',
-        id,
+        id: tid,
         name,
         subtitle: '中超',
         logo: t.logo || '',
@@ -473,6 +515,56 @@ async function search(query, limit = 20) {
     players: merged.players.slice(0, limit),
     teams: merged.teams.slice(0, limit),
   };
+}
+
+async function search(query, limit = 20) {
+  const q = String(query || '').trim();
+  if (!q) return { players: [], teams: [] };
+
+  // 1) 优先读本地索引（快）
+  if (isDbEnabled()) {
+    try {
+      const local = await searchIndexRepo.searchLocal(q, limit);
+      if (local.players.length + local.teams.length >= 1) {
+        // 结果够用则直接返回；过少时再补上游
+        if (local.players.length + local.teams.length >= 3 || local.players.some((p) => p.name === q)) {
+          return {
+            players: local.players.slice(0, limit),
+            teams: local.teams.slice(0, limit),
+          };
+        }
+        const live = await searchLive(q, limit);
+        const seenP = new Set(local.players.map((p) => p.id));
+        const seenT = new Set(local.teams.map((t) => t.id));
+        for (const p of live.players) {
+          if (!seenP.has(p.id)) {
+            seenP.add(p.id);
+            local.players.push(p);
+          }
+        }
+        for (const t of live.teams) {
+          if (!seenT.has(t.id)) {
+            seenT.add(t.id);
+            local.teams.push(t);
+          }
+        }
+        searchIndexRepo.upsertHits([...live.players, ...live.teams]).catch(() => {});
+        return {
+          players: local.players.slice(0, limit),
+          teams: local.teams.slice(0, limit),
+        };
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // 2) 索引未命中：上游搜索并回写
+  const live = await searchLive(q, limit);
+  if (isDbEnabled()) {
+    searchIndexRepo.upsertHits([...live.players, ...live.teams]).catch(() => {});
+  }
+  return live;
 }
 
 async function getTeamDetailFromDongqiu(teamId, leagueKey = 'Chinese Super League') {
