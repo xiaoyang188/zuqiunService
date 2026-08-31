@@ -194,14 +194,13 @@ async function findByDateRange(dateRange, leagueKey) {
   return rows.map(rowToMatch).filter(Boolean);
 }
 
-/** 近 30 天已结束比赛（不含今天），按时间倒序 */
-async function findHistoryMatches(leagueKey, days = 30) {
+/** 近 90 天已结束比赛（不含今天），按时间倒序 */
+async function findHistoryMatches(leagueKey, days = 90) {
   const pool = getPool();
-  const safeDays = Math.min(Math.max(Number(days) || 30, 1), 90);
+  const safeDays = Math.min(Math.max(Number(days) || 90, 1), 90);
   const { start, end } = getDateRangeBounds('history');
-  // history bounds 固定 30 天；若自定义 days 则重算
   const startCustom =
-    safeDays === 30 ? start : new Date(end.getTime() - safeDays * 86400000);
+    safeDays === 90 ? start : new Date(end.getTime() - safeDays * 86400000);
 
   let rows = [];
   try {

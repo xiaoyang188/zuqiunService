@@ -49,8 +49,8 @@ function getDateRangeBounds(dateRange) {
     return { start: todayStart, end: shanghaiDayStart(8) };
   }
   if (dateRange === 'history') {
-    // 近 30 天（不含今天）：历史赛果窗口
-    return { start: shanghaiDayStart(-30), end: todayStart };
+    // 近 90 天（不含今天）：与完场保留天数对齐，覆盖世界杯等大赛赛果
+    return { start: shanghaiDayStart(-90), end: todayStart };
   }
   throw new Error('dateRange 无效');
 }
