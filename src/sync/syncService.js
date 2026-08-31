@@ -1,5 +1,7 @@
 const espn = require('../espnClient');
-const { APP_LEAGUES } = require('../leagueCodes');
+const dongqiu = require('../dongqiuClient');
+const dongqiuMapper = require('../dongqiuMapper');
+const { APP_LEAGUES, getLeaguePrimarySource } = require('../leagueCodes');
 const {
   mapScheduleItem,
   mapSummaryToMatch,
@@ -24,6 +26,10 @@ const { shanghaiDayStart, scheduleDayForRange } = require('../dateRange');
 const DATE_RANGES = ['yesterday', 'today', 'tomorrow', 'week'];
 const ALL_LEAGUE_KEYS = Object.keys(APP_LEAGUES);
 const FINISHED_RETENTION_DAYS = Number(process.env.SYNC_MATCH_RETENTION_DAYS) || 90;
+
+function prefersDongqiu(leagueKey) {
+  return getLeaguePrimarySource(leagueKey) === 'dongqiu';
+}
 
 let syncing = {
   schedule: false,
@@ -86,6 +92,30 @@ async function refreshCurrentScoreboards(leagueKeys = ALL_LEAGUE_KEYS) {
   return updated;
 }
 
+async function refreshDongqiuCslMatches() {
+  const leagueKey = 'Chinese Super League';
+  let updated = 0;
+  try {
+    const tab = await dongqiu.fetchLeagueTabMatches(leagueKey);
+    for (const item of tab) {
+      const mapped = dongqiuMapper.mapMatchFromTab(item, leagueKey);
+      if (!mapped) continue;
+      await matchRepo.upsertMatch(mapped);
+      updated += 1;
+    }
+    const recent = await dongqiu.fetchRecentSchedule(leagueKey);
+    for (const item of recent) {
+      const mapped = dongqiuMapper.mapMatchFromSchedule(item, leagueKey);
+      if (!mapped) continue;
+      await matchRepo.upsertMatch(mapped);
+      updated += 1;
+    }
+  } catch (e) {
+    console.warn('[sync] dongqiu CSL schedule failed:', e.message);
+  }
+  return updated;
+}
+
 async function syncScheduleOnce() {
   if (syncing.schedule) return { skipped: true };
   syncing.schedule = true;
@@ -94,6 +124,7 @@ async function syncScheduleOnce() {
       const map = new Map();
 
       for (const leagueKey of ALL_LEAGUE_KEYS) {
+        if (prefersDongqiu(leagueKey)) continue; // 中超走懂球
         for (const dateRange of DATE_RANGES) {
           const scheduleDay = scheduleDayForRange(dateRange);
           const raw = await espn.fetchSchedule(dateRange, leagueKey);
@@ -114,16 +145,25 @@ async function syncScheduleOnce() {
       const list = sortMatches(Array.from(map.values()));
       await matchRepo.upsertMatches(list);
 
-      await refreshCurrentScoreboards();
-      // 补刷昨天：土美/巴澳等场次开球日在昨天，必须写回 FT
-      await refreshEspnDayBucket('yesterday');
+      await refreshCurrentScoreboards(
+        ALL_LEAGUE_KEYS.filter((k) => !prefersDongqiu(k))
+      );
+      await refreshEspnDayBucket(
+        'yesterday',
+        ALL_LEAGUE_KEYS.filter((k) => !prefersDongqiu(k))
+      );
 
-      const syncedIds = list.map((m) => matchRepo.parseExternalId(m._id));
+      const dongqiuRows = await refreshDongqiuCslMatches();
+
+      const syncedIds = [
+        ...list.map((m) => matchRepo.parseExternalId(m._id)),
+        // dq ids 由 upsert 内部处理
+      ];
       const prunedWindow = await matchRepo.pruneMissingInRanges(DATE_RANGES, syncedIds);
       const cutoff = shanghaiDayStart(-FINISHED_RETENTION_DAYS);
       const prunedOld = await matchRepo.pruneFinishedBefore(cutoff);
 
-      return list.length + prunedWindow + prunedOld;
+      return list.length + dongqiuRows + prunedWindow + prunedOld;
     });
   } finally {
     syncing.schedule = false;
@@ -135,14 +175,16 @@ async function syncLiveOnce() {
   syncing.live = true;
   try {
     return await runJob('syncLive', async () => {
+      const espnLeagues = ALL_LEAGUE_KEYS.filter((k) => !prefersDongqiu(k));
       let updated = await refreshCurrentScoreboards([
         'World Cup',
-        ...ALL_LEAGUE_KEYS.filter((k) => k !== 'World Cup'),
+        ...espnLeagues.filter((k) => k !== 'World Cup'),
       ]);
       updated += await refreshEspnDayBucket('yesterday', [
         'World Cup',
-        ...ALL_LEAGUE_KEYS.filter((k) => k !== 'World Cup'),
+        ...espnLeagues.filter((k) => k !== 'World Cup'),
       ]);
+      updated += await refreshDongqiuCslMatches();
 
       const liveRows = await matchRepo.findLiveMatches();
       const staleRows = await matchRepo.findKickoffStaleMatches(40);
@@ -156,6 +198,9 @@ async function syncLiveOnce() {
       }
 
       for (const row of rows) {
+        if (String(row.external_id).startsWith('dq_') || prefersDongqiu(row.league_key)) {
+          continue; // 懂球帝场次靠 tab 刷新
+        }
         try {
           const { summary, leagueKey } = await espn.fetchMatchSummary(
             row.external_id,
@@ -186,6 +231,16 @@ async function syncStandingsOnce() {
       let total = 0;
       for (const leagueKey of ALL_LEAGUE_KEYS) {
         try {
+          if (prefersDongqiu(leagueKey)) {
+            const table = await dongqiu.fetchStandings(leagueKey);
+            const rows = table.map((row, i) =>
+              dongqiuMapper.mapStandingRow(row, leagueKey, i)
+            );
+            await standingRepo.replaceStandings(leagueKey, rows);
+            total += rows.length;
+            await bracketRepo.replaceBracket(leagueKey, []);
+            continue;
+          }
           const table = await espn.fetchStandingsRaw(leagueKey);
           let rows = table.map((row) => mapStandingRow(row, leagueKey));
           await standingRepo.replaceStandings(leagueKey, rows);
@@ -223,6 +278,36 @@ async function cacheAthleteProfiles(leagueKey, athleteIds) {
 }
 
 async function syncLeaguePlayerStats(leagueKey) {
+  if (prefersDongqiu(leagueKey)) {
+    const scorersRaw = await dongqiu.fetchPersonRanking(leagueKey, 'goals');
+    const scorers = scorersRaw.map((row, i) => dongqiuMapper.mapScorerRow(row, i));
+    await playerRankingRepo.replaceRankings(leagueKey, 'scorers', scorers);
+
+    let assists = [];
+    try {
+      const assistsRaw = await dongqiu.fetchPersonRanking(leagueKey, 'assists');
+      assists = assistsRaw.map((row, i) => dongqiuMapper.mapAssistRow(row, i));
+      await playerRankingRepo.replaceRankings(leagueKey, 'assists', assists);
+    } catch {
+      await playerRankingRepo.replaceRankings(leagueKey, 'assists', []);
+    }
+
+    const athleteIds = scorersRaw
+      .map((r) => String(r.person_id || ''))
+      .filter((id) => /^\d+$/.test(id))
+      .slice(0, 20);
+    for (const id of athleteIds) {
+      try {
+        const raw = await dongqiu.fetchPersonDetail(id);
+        const mapped = dongqiuMapper.mapPersonDetail(raw, leagueKey);
+        if (mapped) await playerRepo.upsertPlayer(id, leagueKey, mapped);
+      } catch {
+        /* skip */
+      }
+    }
+    return scorers.length + assists.length;
+  }
+
   const syncLimit = 20;
   const athleteIds = [];
 
@@ -272,6 +357,13 @@ async function syncTeamsOnce() {
       let total = 0;
       for (const leagueKey of ALL_LEAGUE_KEYS) {
         try {
+          if (prefersDongqiu(leagueKey)) {
+            const table = await dongqiu.fetchStandings(leagueKey);
+            const teams = table.map((r) => dongqiuMapper.mapTeamFromStanding(r, leagueKey));
+            await teamRepo.replaceTeamsForLeague(leagueKey, teams);
+            total += teams.length;
+            continue;
+          }
           const raw = await espn.fetchCompetitionTeams(leagueKey);
           const teams = raw.map((t) => mapTeam(t, leagueKey));
           await teamRepo.replaceTeamsForLeague(leagueKey, teams);
@@ -295,6 +387,9 @@ async function syncMatchDetailsOnce() {
       const rows = await matchRepo.findNeedingDetailEnrich(12);
       let enriched = 0;
       for (const row of rows) {
+        if (String(row.external_id).startsWith('dq_') || prefersDongqiu(row.league_key)) {
+          continue;
+        }
         try {
           await syncMatchDetail(row.external_id, row.league_key);
           enriched += 1;

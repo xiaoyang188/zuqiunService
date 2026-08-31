@@ -31,7 +31,23 @@ async function findByExternalId(externalId, leagueKey) {
   }
 }
 
+async function findByExternalIdAny(externalId) {
+  try {
+    const pool = getPool();
+    if (!pool) return null;
+    const [rows] = await pool.execute(
+      `SELECT payload FROM players WHERE external_id = ? ORDER BY synced_at DESC LIMIT 1`,
+      [String(externalId)]
+    );
+    return rowToPlayer(rows[0]);
+  } catch (e) {
+    if (e.code === 'ER_NO_SUCH_TABLE') return null;
+    throw e;
+  }
+}
+
 module.exports = {
   upsertPlayer,
   findByExternalId,
+  findByExternalIdAny,
 };

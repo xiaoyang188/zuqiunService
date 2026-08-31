@@ -62,6 +62,8 @@ const COUNTRY_ZH = {
   'South Korea': '韩国',
   'Korea Republic': '韩国',
   China: '中国',
+  'China PR': '中国',
+  'China PR.': '中国',
   Australia: '澳大利亚',
   'New Zealand': '新西兰',
   'Saudi Arabia': '沙特阿拉伯',
@@ -187,6 +189,26 @@ const TEAM_ZH = {
   Porto: '波尔图',
   Celtic: '凯尔特人',
   Rangers: '流浪者',
+  // 中超
+  'Shanghai Port': '上海海港',
+  'Shanghai SIPG': '上海海港',
+  'Shanghai Shenhua': '上海申花',
+  'Beijing Guoan': '北京国安',
+  'Shandong Taishan': '山东泰山',
+  'Tianjin Jinmen Tiger': '天津津门虎',
+  Henan: '河南',
+  'Henan FC': '河南',
+  'Zhejiang Professional FC': '浙江',
+  Zhejiang: '浙江',
+  'Chengdu Rongcheng': '成都蓉城',
+  'Wuhan Three Towns': '武汉三镇',
+  'Qingdao Hainiu': '青岛海牛',
+  'Qingdao West Coast': '青岛西海岸',
+  'Shenzhen Xinpengcheng': '深圳新鹏城',
+  'Yunnan Yukun': '云南玉昆',
+  'Dalian Yingbo': '大连英博',
+  'Chongqing Tonglianglong': '重庆铜梁龙',
+  'Liaoning Tieren': '辽宁铁人',
 };
 
 const lookup = new Map(
@@ -196,10 +218,48 @@ const lookup = new Map(
   ])
 );
 
+const reverseLookup = new Map(
+  Object.entries(TEAM_ZH).flatMap(([en, zh]) => [
+    [zh, en],
+    [zh.toLowerCase(), en],
+  ])
+);
+
+/** 常见球员中文名 → ESPN 英文检索词 */
+const PLAYER_SEARCH_ALIASES = {
+  武磊: 'Wu Lei',
+  张玉宁: 'Zhang Yuning',
+  韦世豪: 'Wei Shihao',
+  武敬丽: 'Wu Jingli',
+  艾克森: 'Elkeson',
+  洛国富: 'Aloisio',
+  奥斯卡: 'Oscar',
+  费南多: 'Fernandinho',
+  高拉特: 'Hulk',
+};
+
 function toZhName(name) {
   if (!name || typeof name !== 'string') return name || '';
   const trimmed = name.trim();
   return lookup.get(trimmed) || lookup.get(trimmed.toLowerCase()) || trimmed;
+}
+
+/** 中文队名 / 球员别名 → 用于 ESPN 搜索的英文词 */
+function expandSearchQueries(query) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  const set = new Set([q]);
+  const enTeam = reverseLookup.get(q) || reverseLookup.get(q.toLowerCase());
+  if (enTeam) set.add(enTeam);
+  const playerAlias = PLAYER_SEARCH_ALIASES[q] || PLAYER_SEARCH_ALIASES[q.toLowerCase()];
+  if (playerAlias) set.add(playerAlias);
+  // 去掉「队」「足球俱乐部」等后缀再试
+  const stripped = q.replace(/(足球俱乐部|足球队|队)$/u, '');
+  if (stripped && stripped !== q) {
+    const en2 = reverseLookup.get(stripped);
+    if (en2) set.add(en2);
+  }
+  return Array.from(set);
 }
 
 function toZhCountry(country) {
@@ -247,4 +307,5 @@ module.exports = {
   toZhCountry,
   resolveTeamDisplayName,
   toZhPosition,
+  expandSearchQueries,
 };

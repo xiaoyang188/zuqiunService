@@ -3,11 +3,13 @@ const {
   APP_LEAGUES,
   HOT_LEAGUE_KEYS,
   getLeagueByKey,
+  getLeagueKeyBySlug,
 } = require('./leagueCodes');
 const { shanghaiEspnDate } = require('./dateRange');
 
 const SITE_HOST = 'site.api.espn.com';
 const CORE_HOST = 'sports.core.api.espn.com';
+const WEB_HOST = 'site.web.api.espn.com';
 const USER_AGENT = 'zuqiu-server/1.0';
 
 /** 复用 TLS 连接，减少并发 scoreboard 请求的握手耗时 */
@@ -70,6 +72,22 @@ function apisGet(leagueSlug, resource) {
 
 function coreGet(path) {
   return request(CORE_HOST, path);
+}
+
+function webGet(path) {
+  return request(WEB_HOST, path);
+}
+
+function httpsToEspn(url) {
+  if (!url || typeof url !== 'string') return '';
+  return url.replace(/^http:\/\//, 'https://').replace('sports.core.api.espn.pvt', 'sports.core.api.espn.com');
+}
+
+async function coreGetByRef(ref) {
+  const url = httpsToEspn(ref);
+  const m = url.match(/^https:\/\/([^/]+)(\/.*)$/);
+  if (!m) throw new Error('invalid ref');
+  return request(m[1], m[2]);
 }
 
 function formatEspnDate(date) {
@@ -181,6 +199,7 @@ const SEASON_KEYWORDS = [
   ['Bundesliga', /bundesliga/i],
   ['Serie A', /serie a/i],
   ['Ligue 1', /ligue 1/i],
+  ['Chinese Super League', /chinese super league|中超/i],
 ];
 
 function correctLeagueBySeason(summary, fallbackKey) {
@@ -266,9 +285,352 @@ async function fetchStandingsRaw(leagueKey) {
 async function fetchCompetitionTeams(leagueKey) {
   const meta = getLeagueByKey(leagueKey);
   if (!meta) return [];
-  const data = await siteGet(meta.slug, 'teams');
-  const teams = data?.sports?.[0]?.leagues?.[0]?.teams || [];
-  return teams.map((t) => t.team).filter(Boolean);
+  try {
+    const data = await siteGet(meta.slug, 'teams');
+    const teams = data?.sports?.[0]?.leagues?.[0]?.teams || [];
+    const mapped = teams.map((t) => t.team).filter(Boolean);
+    if (mapped.length) return mapped;
+  } catch {
+    /* site 偶发 403，走 core */
+  }
+  return fetchCompetitionTeamsViaCore(meta.slug);
+}
+
+async function fetchCompetitionTeamsViaCore(leagueSlug) {
+  const year = new Date().getFullYear();
+  const years = [year, year - 1, year + 1];
+  let list = null;
+  for (const y of years) {
+    try {
+      list = await coreGet(
+        `/v2/sports/soccer/leagues/${leagueSlug}/seasons/${y}/teams?limit=50&lang=en&region=us`
+      );
+      if (list?.items?.length) break;
+    } catch {
+      /* next */
+    }
+  }
+  if (!list?.items?.length) {
+    try {
+      list = await coreGet(
+        `/v2/sports/soccer/leagues/${leagueSlug}/teams?limit=50&lang=en&region=us`
+      );
+    } catch {
+      return [];
+    }
+  }
+  const teams = [];
+  await Promise.all(
+    (list.items || []).map(async (item) => {
+      try {
+        const team = await coreGetByRef(item.$ref);
+        if (team?.id) teams.push(team);
+      } catch {
+        /* skip */
+      }
+    })
+  );
+  return teams;
+}
+
+function extractIdFromUid(uid, prefix) {
+  if (!uid) return '';
+  const m = String(uid).match(new RegExp(`${prefix}:(\\d+)`, 'i'));
+  return m ? m[1] : '';
+}
+
+function slugToLeagueKey(slug) {
+  if (!slug) return null;
+  const normalized = String(slug).toLowerCase();
+  return getLeagueKeyBySlug(normalized) || getLeagueKeyBySlug(String(slug)) || null;
+}
+
+/** 搜索球员 / 球队（仅足球） */
+async function searchSoccer(query, limit = 20) {
+  const q = String(query || '').trim();
+  if (!q) return { players: [], teams: [] };
+  const pageLimit = Math.min(Math.max(Number(limit) || 20, 1), 30);
+
+  let players = [];
+  let teams = [];
+
+  try {
+    const data = await webGet(
+      `/apis/search/v2?query=${encodeURIComponent(q)}&limit=${pageLimit}`
+    );
+    for (const group of data?.results || []) {
+      if (group.type === 'player') {
+        for (const item of group.contents || []) {
+          if (item.sport && item.sport !== 'soccer') continue;
+          const athleteId =
+            extractIdFromUid(item.uid, 'a') ||
+            String(item.link?.web || '').match(/\/id\/(\d+)/)?.[1] ||
+            '';
+          if (!athleteId) continue;
+          const leagueSlug = (item.defaultLeagueSlug || '').toLowerCase();
+          players.push({
+            type: 'player',
+            id: athleteId,
+            name: item.displayName || '',
+            subtitle: item.subtitle || item.description || '',
+            logo: item.image?.default || '',
+            leagueSlug,
+            leagueKey: slugToLeagueKey(leagueSlug),
+            leagueLabel: item.subtitle || '',
+          });
+        }
+      }
+      if (group.type === 'team') {
+        for (const item of group.contents || []) {
+          if (item.sport && item.sport !== 'soccer') continue;
+          const teamId =
+            extractIdFromUid(item.uid, 't') ||
+            String(item.link?.web || '').match(/\/id\/(\d+)/)?.[1] ||
+            '';
+          if (!teamId) continue;
+          const leagueSlug = (item.defaultLeagueSlug || '').toLowerCase();
+          teams.push({
+            type: 'team',
+            id: teamId,
+            name: item.displayName || '',
+            subtitle: item.subtitle || '',
+            logo: item.image?.default || '',
+            leagueSlug,
+            leagueKey: slugToLeagueKey(leagueSlug),
+            leagueLabel: item.subtitle || '',
+          });
+        }
+      }
+    }
+  } catch {
+    /* fallback common v3 */
+  }
+
+  if (!players.length && !teams.length) {
+    try {
+      const data = await webGet(
+        `/apis/common/v3/search?query=${encodeURIComponent(q)}&limit=${pageLimit}&type=player,team`
+      );
+      for (const item of data?.items || []) {
+        if (item.sport && item.sport !== 'soccer') continue;
+        const leagueSlug = (item.defaultLeagueSlug || item.league || '').toLowerCase();
+        if (item.type === 'player') {
+          players.push({
+            type: 'player',
+            id: String(item.id),
+            name: item.displayName || '',
+            subtitle: item.label || item.league || '',
+            logo: item.imageUrl || '',
+            leagueSlug,
+            leagueKey: slugToLeagueKey(leagueSlug),
+            leagueLabel: item.label || '',
+          });
+        } else if (item.type === 'team') {
+          teams.push({
+            type: 'team',
+            id: String(item.id),
+            name: item.displayName || '',
+            subtitle: item.subtitle || item.label || '',
+            logo: item.imageUrl || '',
+            leagueSlug,
+            leagueKey: slugToLeagueKey(leagueSlug),
+            leagueLabel: item.subtitle || '',
+          });
+        }
+      }
+    } catch {
+      /* empty */
+    }
+  }
+
+  return {
+    players: players.slice(0, pageLimit),
+    teams: teams.slice(0, pageLimit),
+  };
+}
+
+function parseRecordStats(recordPayload) {
+  const item =
+    (recordPayload?.items || []).find((i) => i.type === 'total' || i.name === 'overall') ||
+    recordPayload?.items?.[0];
+  if (!item) return null;
+  const stats = {};
+  for (const s of item.stats || []) {
+    if (s.name) stats[s.name] = s.displayValue ?? s.value;
+  }
+  return {
+    summary: item.summary || item.displayValue || '',
+    played: Number(stats.gamesPlayed) || 0,
+    win: Number(stats.wins) || 0,
+    draw: Number(stats.ties) || 0,
+    lose: Number(stats.losses) || 0,
+    gf: Number(stats.pointsFor) || 0,
+    ga: Number(stats.pointsAgainst) || 0,
+    gd: Number(stats.pointDifferential) || 0,
+    points: Number(stats.points) || 0,
+    rank: Number(stats.rank) || null,
+  };
+}
+
+async function resolveSeasonYear(leagueSlug) {
+  const year = new Date().getFullYear();
+  for (const y of [year, year - 1, year + 1]) {
+    try {
+      await coreGet(
+        `/v2/sports/soccer/leagues/${leagueSlug}/seasons/${y}/teams?limit=1&lang=en&region=us`
+      );
+      return y;
+    } catch {
+      /* next */
+    }
+  }
+  return year;
+}
+
+async function fetchTeamRoster(leagueSlug, seasonYear, teamId, limit = 40) {
+  let list;
+  try {
+    list = await coreGet(
+      `/v2/sports/soccer/leagues/${leagueSlug}/seasons/${seasonYear}/teams/${teamId}/athletes?lang=en&region=us&limit=${limit}`
+    );
+  } catch {
+    return [];
+  }
+  const refs = (list?.items || []).slice(0, limit);
+  const athletes = [];
+  const chunk = 8;
+  for (let i = 0; i < refs.length; i += chunk) {
+    const batch = refs.slice(i, i + chunk);
+    const rows = await Promise.all(
+      batch.map(async (item) => {
+        try {
+          const a = await coreGetByRef(item.$ref);
+          if (!a?.id) return null;
+          return {
+            id: String(a.id),
+            athleteId: String(a.id),
+            name: a.displayName || a.fullName || '',
+            shortName: a.shortName || '',
+            number: a.jersey ? String(a.jersey) : '',
+            position: a.position?.abbreviation || a.position?.displayName || '',
+            avatar: a.headshot?.href || '',
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+    athletes.push(...rows.filter(Boolean));
+  }
+  const order = { G: 0, GK: 0, D: 1, M: 2, F: 3 };
+  athletes.sort((a, b) => {
+    const pa = order[a.position] ?? 9;
+    const pb = order[b.position] ?? 9;
+    if (pa !== pb) return pa - pb;
+    return Number(a.number || 99) - Number(b.number || 99);
+  });
+  return athletes;
+}
+
+async function fetchTeamSchedule(leagueSlug, teamId, limit = 12) {
+  try {
+    const data = await webGet(
+      `/apis/site/v2/sports/soccer/${leagueSlug}/teams/${teamId}/schedule`
+    );
+    const events = data?.events || [];
+    return events.slice(-limit).reverse().map((event) => {
+      const comp = event.competitions?.[0];
+      const competitors = comp?.competitors || [];
+      const home = competitors.find((c) => c.homeAway === 'home');
+      const away = competitors.find((c) => c.homeAway === 'away');
+      const state = comp?.status?.type?.state;
+      let status = 'NS';
+      if (state === 'in') status = 'LIVE';
+      else if (state === 'post') status = 'FT';
+      const scoreVal = (side) => {
+        const s = side?.score;
+        if (s == null) return null;
+        if (typeof s === 'object') return Number(s.displayValue ?? s.value);
+        return Number(s);
+      };
+      return {
+        _id: String(event.id),
+        matchTime: event.date || '',
+        homeTeam: home?.team?.displayName || '',
+        awayTeam: away?.team?.displayName || '',
+        homeScore: scoreVal(home),
+        awayScore: scoreVal(away),
+        status,
+        statusText: comp?.status?.type?.shortDetail || comp?.status?.type?.description || '',
+        leagueSlug,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** 球队详情：资料 + 战绩 + 阵容 + 近期赛程 */
+async function fetchTeamDetail(teamId, leagueKeyHint) {
+  const id = String(teamId);
+  let leagueKey = leagueKeyHint && getLeagueByKey(leagueKeyHint) ? leagueKeyHint : null;
+  let leagueSlug = leagueKey ? getLeagueByKey(leagueKey).slug : null;
+
+  if (!leagueSlug) {
+    // 优先中超，再扫其它联赛
+    const ordered = [
+      'Chinese Super League',
+      ...Object.keys(APP_LEAGUES).filter((k) => k !== 'Chinese Super League'),
+    ];
+    for (const key of ordered) {
+      const slug = APP_LEAGUES[key]?.slug;
+      if (!slug) continue;
+      const year = await resolveSeasonYear(slug);
+      try {
+        await coreGet(
+          `/v2/sports/soccer/leagues/${slug}/seasons/${year}/teams/${id}?lang=en&region=us`
+        );
+        leagueKey = key;
+        leagueSlug = slug;
+        break;
+      } catch {
+        /* next */
+      }
+    }
+  }
+
+  if (!leagueSlug || !leagueKey) {
+    throw new Error('球队不存在');
+  }
+
+  const seasonYear = await resolveSeasonYear(leagueSlug);
+  const raw = await coreGet(
+    `/v2/sports/soccer/leagues/${leagueSlug}/seasons/${seasonYear}/teams/${id}?lang=en&region=us`
+  );
+
+  let record = null;
+  if (raw.record?.$ref) {
+    try {
+      record = parseRecordStats(await coreGetByRef(raw.record.$ref));
+    } catch {
+      /* optional */
+    }
+  }
+
+  const [roster, recentMatches] = await Promise.all([
+    fetchTeamRoster(leagueSlug, seasonYear, id),
+    fetchTeamSchedule(leagueSlug, id),
+  ]);
+
+  return {
+    raw,
+    leagueKey,
+    leagueSlug,
+    seasonYear,
+    record,
+    roster,
+    recentMatches,
+  };
 }
 
 async function fetchFinishedEvents(meta) {
@@ -405,25 +767,64 @@ async function fetchAssistsFromSummaries(leagueKey, limit = 5) {
 }
 
 async function fetchAthleteRaw(athleteId, leagueKey) {
-  const meta = getLeagueByKey(leagueKey);
-  if (!meta?.slug) throw new Error('球员不存在');
+  const id = String(athleteId);
 
-  const year = new Date().getFullYear();
-  const years = [year, year - 1, year + 1, 2026, 2024, 2022];
-  const tried = new Set();
+  // Web athlete：含球队、国籍，不依赖联赛 season 路径
+  try {
+    const data = await webGet(`/apis/common/v3/sports/soccer/athletes/${id}`);
+    if (data?.athlete?.id) {
+      return { ...data.athlete, _source: 'web' };
+    }
+  } catch {
+    /* fall through */
+  }
 
-  for (const y of years) {
-    if (tried.has(y)) continue;
-    tried.add(y);
-    try {
-      return await coreGet(
-        `/v2/sports/soccer/leagues/${meta.slug}/seasons/${y}/athletes/${athleteId}?lang=en&region=us`
-      );
-    } catch {
-      /* try next season year */
+  const tryCore = async (slug) => {
+    const year = new Date().getFullYear();
+    const years = [year, year - 1, year + 1, 2026, 2024, 2022];
+    const tried = new Set();
+    for (const y of years) {
+      if (tried.has(y)) continue;
+      tried.add(y);
+      try {
+        return await coreGet(
+          `/v2/sports/soccer/leagues/${slug}/seasons/${y}/athletes/${id}?lang=en&region=us`
+        );
+      } catch {
+        /* next */
+      }
+    }
+    return null;
+  };
+
+  if (leagueKey) {
+    const meta = getLeagueByKey(leagueKey);
+    if (meta?.slug) {
+      const hit = await tryCore(meta.slug);
+      if (hit) return hit;
     }
   }
-  throw new Error('球员不存在');
+
+  const ordered = [
+    'Chinese Super League',
+    ...HOT_LEAGUE_KEYS,
+    ...Object.keys(APP_LEAGUES),
+  ];
+  const seen = new Set();
+  for (const key of ordered) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const slug = APP_LEAGUES[key]?.slug;
+    if (!slug) continue;
+    const hit = await tryCore(slug);
+    if (hit) return hit;
+  }
+
+  try {
+    return await coreGet(`/v2/sports/soccer/athletes/${id}?lang=en&region=us`);
+  } catch {
+    throw new Error('球员不存在');
+  }
 }
 
 module.exports = {
@@ -438,4 +839,6 @@ module.exports = {
   fetchAssistsFromSummaries,
   fetchAthleteRaw,
   fetchKnockoutBracket,
+  searchSoccer,
+  fetchTeamDetail,
 };

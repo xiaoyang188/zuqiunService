@@ -89,6 +89,8 @@ const TTL = {
   scorers: 300_000,
   teams: 600_000,
   player: 600_000,
+  search: 120_000,
+  teamDetail: 300_000,
   health: 10_000,
 };
 
@@ -279,25 +281,64 @@ app.get('/api/teams', async (req, res) => {
   }
 });
 
-function parsePlayerId(raw) {
-  return String(raw).replace(/^espn_player_/, '');
-}
-
-app.get('/api/players/:id', async (req, res) => {
-  const athleteId = parsePlayerId(req.params.id);
-  const league = decodeURIComponent(req.query.league || 'World Cup');
-  if (!/^\d+$/.test(athleteId)) {
-    res.status(400).json(fail('球员 ID 无效'));
+app.get('/api/teams/:id', async (req, res) => {
+  const teamId = String(req.params.id || '').replace(/^(espn_team_|dq_team_)/, '');
+  const league = decodeURIComponent(req.query.league || '');
+  if (!/^\d+$/.test(teamId)) {
+    res.status(400).json(fail('球队 ID 无效'));
     return;
   }
-  if (!APP_LEAGUES[league]) {
+  if (league && !APP_LEAGUES[league]) {
     res.status(400).json(fail('不支持的联赛'));
     return;
   }
   try {
-    const key = `player:${athleteId}:${league}`;
+    const key = `teamDetail:${teamId}:${league || 'auto'}`;
+    const team = await cached(key, TTL.teamDetail, () =>
+      dataService.getTeamDetail(teamId, league || undefined)
+    );
+    res.json(ok(team));
+  } catch (e) {
+    res.status(404).json(fail(e.message || '球队不存在'));
+  }
+});
+
+app.get('/api/search', async (req, res) => {
+  const q = String(req.query.q || req.query.keyword || '').trim();
+  const limit = Math.min(Number(req.query.limit) || 20, 30);
+  if (!q) {
+    res.json(ok({ players: [], teams: [] }));
+    return;
+  }
+  if (q.length > 40) {
+    res.status(400).json(fail('关键词过长'));
+    return;
+  }
+  try {
+    const key = `search:${q.toLowerCase()}:${limit}`;
+    const data = await cached(key, TTL.search, () => dataService.search(q, limit));
+    res.json(ok(data));
+  } catch (e) {
+    res.status(500).json(fail(e.message || '搜索失败'));
+  }
+});
+
+function parsePlayerId(raw) {
+  return String(raw).replace(/^(espn_player_|dq_player_)/, '');
+}
+
+app.get('/api/players/:id', async (req, res) => {
+  const athleteId = parsePlayerId(req.params.id);
+  const leagueRaw = req.query.league ? decodeURIComponent(String(req.query.league)) : '';
+  const league = leagueRaw && APP_LEAGUES[leagueRaw] ? leagueRaw : '';
+  if (!/^\d+$/.test(athleteId)) {
+    res.status(400).json(fail('球员 ID 无效'));
+    return;
+  }
+  try {
+    const key = `player:${athleteId}:${league || 'auto'}`;
     const player = await cached(key, TTL.player, () =>
-      dataService.getPlayerDetail(athleteId, league)
+      dataService.getPlayerDetail(athleteId, league || undefined)
     );
     res.json(ok(player));
   } catch (e) {

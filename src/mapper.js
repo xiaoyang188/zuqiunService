@@ -578,9 +578,44 @@ function lbsToKg(lbs) {
   return Number.isFinite(n) && n > 0 ? `${Math.round(n * 0.453592)} kg` : '';
 }
 
+function parseImperialHeight(display) {
+  if (!display || typeof display !== 'string') return '';
+  const m = display.match(/(\d+)\s*'\s*(\d+)/);
+  if (!m) return display;
+  const inches = Number(m[1]) * 12 + Number(m[2]);
+  return inchesToCm(inches) || display;
+}
+
+function parseImperialWeight(display) {
+  if (!display || typeof display !== 'string') return '';
+  const m = display.match(/([\d.]+)\s*lbs/i);
+  if (!m) return display;
+  return lbsToKg(m[1]) || display;
+}
+
 function mapAthleteDetail(raw, leagueKey) {
   if (!raw?.id) return null;
   const pos = raw.position?.abbreviation || raw.position?.displayName || raw.position?.name || '';
+  const teamName =
+    raw.team?.displayName ||
+    raw.team?.name ||
+    raw.teamName ||
+    '';
+  const teamLogo = raw.team?.logos?.[0]?.href || raw.team?.logo || raw.flag?.href || '';
+  const nationality =
+    raw.citizenship ||
+    raw.citizenshipCountry?.abbreviation ||
+    raw.flag?.alt ||
+    '';
+  let birthDate = '';
+  if (raw.dateOfBirth) {
+    birthDate = String(raw.dateOfBirth).slice(0, 10);
+  } else if (raw.displayDOB) {
+    // 19/11/1991 → 1991-11-19
+    const m = String(raw.displayDOB).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m) birthDate = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    else birthDate = raw.displayDOB;
+  }
   return {
     _id: `espn_player_${raw.id}`,
     athleteId: String(raw.id),
@@ -588,16 +623,70 @@ function mapAthleteDetail(raw, leagueKey) {
     shortName: raw.shortName || '',
     avatar: raw.headshot?.href || raw.flag?.href || '',
     jerseyImage: raw.jerseyImages?.[0]?.href || '',
-    teamName: '',
-    teamLogo: raw.flag?.href || '',
+    teamName: toZhName(teamName),
+    teamId: raw.team?.id ? String(raw.team.id) : '',
+    teamLogo,
     position: toZhPosition(pos),
     number: raw.jersey ? `${raw.jersey}号` : '',
     age: raw.age ?? null,
-    height: raw.height ? inchesToCm(raw.height) : raw.displayHeight || '',
-    weight: raw.weight ? lbsToKg(raw.weight) : raw.displayWeight || '',
-    nationality: toZhCountry(raw.citizenship || ''),
-    birthDate: raw.dateOfBirth ? raw.dateOfBirth.slice(0, 10) : '',
+    height: raw.height ? inchesToCm(raw.height) : parseImperialHeight(raw.displayHeight || ''),
+    weight: raw.weight ? lbsToKg(raw.weight) : parseImperialWeight(raw.displayWeight || ''),
+    nationality: toZhCountry(nationality),
+    birthDate,
     league: leagueKey,
+  };
+}
+
+function mapTeamDetail(bundle) {
+  const raw = bundle.raw;
+  const leagueKey = bundle.leagueKey;
+  const logo =
+    (raw.logos || []).find((l) => (l.rel || []).includes('full'))?.href ||
+    raw.logos?.[0]?.href ||
+    '';
+  const roster = (bundle.roster || []).map((p) => ({
+    ...p,
+    name: toZhName(p.name) || p.name,
+    position: toZhPosition(p.position) || p.position,
+  }));
+  const recentMatches = (bundle.recentMatches || []).map((m) => ({
+    ...m,
+    homeTeam: toZhName(m.homeTeam) || m.homeTeam,
+    awayTeam: toZhName(m.awayTeam) || m.awayTeam,
+    league: leagueKey,
+  }));
+  return {
+    _id: `espn_team_${raw.id}`,
+    teamId: String(raw.id),
+    name: resolveTeamDisplayName(raw),
+    shortName: toZhName(raw.shortDisplayName || raw.abbreviation || '') || raw.abbreviation || '',
+    logo,
+    color: raw.color ? `#${raw.color}` : '',
+    country: toZhCountry(raw.location || '') || '中国',
+    league: leagueKey,
+    leagueLabel: require('./leagueCodes').getLeagueLabel(leagueKey),
+    venue: raw.venue?.fullName || raw.venue?.name || '',
+    record: bundle.record,
+    roster,
+    recentMatches,
+  };
+}
+
+function mapSearchResults(raw) {
+  const { getLeagueLabel } = require('./leagueCodes');
+  const mapItem = (item) => ({
+    ...item,
+    name: toZhName(item.name) || item.name,
+    leagueLabel:
+      (item.leagueKey && getLeagueLabel(item.leagueKey)) ||
+      toZhName(item.leagueLabel) ||
+      item.leagueLabel ||
+      item.subtitle ||
+      '',
+  });
+  return {
+    players: (raw.players || []).map(mapItem),
+    teams: (raw.teams || []).map(mapItem),
   };
 }
 
@@ -609,5 +698,7 @@ module.exports = {
   mapAssistRow,
   mapTeam,
   mapAthleteDetail,
+  mapTeamDetail,
+  mapSearchResults,
   sortMatches,
 };

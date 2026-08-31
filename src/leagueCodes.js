@@ -9,6 +9,15 @@ const APP_LEAGUES = {
   'Champions League': { slug: 'uefa.champions', label: '欧冠', country: '欧洲' },
   'World Cup': { slug: 'fifa.world', label: '世界杯', country: '国际' },
   Euro: { slug: 'uefa.euro', label: '欧洲杯', country: '欧洲' },
+  'Chinese Super League': {
+    slug: 'chn.1',
+    label: '中超',
+    country: '中国',
+    /** 主数据源：懂球帝 / dongqiu.org；ESPN 作回退 */
+    primarySource: 'dongqiu',
+    fallbackSource: 'espn',
+    dongqiu: { competitionId: '43', seasonId: '26322', slug: 'CSL' },
+  },
 };
 
 const SLUG_TO_KEY = Object.fromEntries(
@@ -16,10 +25,18 @@ const SLUG_TO_KEY = Object.fromEntries(
 );
 
 /** 首页热门赛事 Tab 顺序 */
-const HOT_LEAGUE_KEYS = ['World Cup', 'Euro', 'Premier League', 'La Liga', 'Champions League'];
+const HOT_LEAGUE_KEYS = [
+  'Chinese Super League',
+  'World Cup',
+  'Euro',
+  'Premier League',
+  'La Liga',
+  'Champions League',
+];
 
 /** 赛程页横向 Chip 筛选（世界杯赛期优先展示） */
 const FILTER_LEAGUE_KEYS = [
+  'Chinese Super League',
   'World Cup',
   'Euro',
   'Premier League',
@@ -32,6 +49,7 @@ const FILTER_LEAGUE_KEYS = [
 
 /** 积分榜页联赛 */
 const STANDINGS_LEAGUE_KEYS = [
+  'Chinese Super League',
   'World Cup',
   'Premier League',
   'La Liga',
@@ -80,6 +98,10 @@ function getLeagueByKey(key) {
   return APP_LEAGUES[key] || null;
 }
 
+function getLeaguePrimarySource(key) {
+  return APP_LEAGUES[key]?.primarySource || 'espn';
+}
+
 module.exports = {
   APP_LEAGUES,
   HOT_LEAGUE_KEYS,
@@ -90,4 +112,5 @@ module.exports = {
   getLeagueLabel,
   getLeagueKeyBySlug,
   getLeagueByKey,
+  getLeaguePrimarySource,
 };

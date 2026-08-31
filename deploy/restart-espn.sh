@@ -42,7 +42,7 @@ echo ""
 echo "========== 5. 健康检查 =========="
 HEALTH=$(curl -s http://127.0.0.1:3000/api/health)
 echo "$HEALTH"
-if echo "$HEALTH" | grep -q '"provider":"espn"'; then
+if echo "$HEALTH" | grep -qE '"provider":"(espn|espn\+dongqiu)"'; then
   echo "✅ API 进程正常"
 else
   echo "❌ 健康检查异常"
