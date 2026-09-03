@@ -38,11 +38,12 @@ function looksLikeDongqiuId(id) {
 }
 
 /** 内存短缓存，避免首页 week+history 连打懂球 */
-const dongqiuMatchCache = { at: 0, leagueKey: '', list: [] };
+const dongqiuMatchCache = { at: 0, leagueKey: '', full: false, list: [] };
 
-async function fetchDongqiuLeagueMatches(leagueKey) {
+async function fetchDongqiuLeagueMatches(leagueKey, { full = false } = {}) {
   if (
     dongqiuMatchCache.leagueKey === leagueKey &&
+    dongqiuMatchCache.full === full &&
     Date.now() - dongqiuMatchCache.at < 90_000 &&
     dongqiuMatchCache.list.length
   ) {
@@ -59,19 +60,23 @@ async function fetchDongqiuLeagueMatches(leagueKey) {
   } catch {
     /* tab optional */
   }
-  try {
-    const recent = await dongqiu.fetchRecentSchedule(leagueKey);
-    for (const item of recent) {
-      const mapped = dongqiuMapper.mapMatchFromSchedule(item, leagueKey);
-      if (mapped) map.set(mapped._id, mapped);
+  // 全量轮次仅历史场景；今日/本周只用 Tab，避免十余秒延迟
+  if (full) {
+    try {
+      const recent = await dongqiu.fetchRecentSchedule(leagueKey);
+      for (const item of recent) {
+        const mapped = dongqiuMapper.mapMatchFromSchedule(item, leagueKey);
+        if (mapped) map.set(mapped._id, mapped);
+      }
+    } catch {
+      /* schedule optional */
     }
-  } catch {
-    /* schedule optional */
   }
 
   const list = Array.from(map.values());
   dongqiuMatchCache.at = Date.now();
   dongqiuMatchCache.leagueKey = leagueKey;
+  dongqiuMatchCache.full = full;
   dongqiuMatchCache.list = list;
 
   if (isDbEnabled() && list.length) {
@@ -107,7 +112,8 @@ function filterMatchesByRange(matches, dateRange, options = {}) {
 }
 
 async function getScheduleFromDongqiu(leagueKey, dateRange, options = {}) {
-  const all = await fetchDongqiuLeagueMatches(leagueKey);
+  const full = dateRange === 'history';
+  const all = await fetchDongqiuLeagueMatches(leagueKey, { full });
   return sortMatches(filterMatchesByRange(all, dateRange, options));
 }
 
@@ -160,6 +166,11 @@ async function getSchedule(dateRange, leagueKey, options = {}) {
     }
 
     const cslKey = 'Chinese Super League';
+    // 历史列表只读库，禁止实时拉懂球 1–30 轮（可达十余秒）
+    if (dateRange === 'history' && !options.date) {
+      return list;
+    }
+
     const needDongqiu =
       (leagueKey && prefersDongqiu(leagueKey)) ||
       (!leagueKey && prefersDongqiu(cslKey));
