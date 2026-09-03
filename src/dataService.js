@@ -112,8 +112,8 @@ function filterMatchesByRange(matches, dateRange, options = {}) {
 }
 
 async function getScheduleFromDongqiu(leagueKey, dateRange, options = {}) {
-  const full = dateRange === 'history';
-  const all = await fetchDongqiuLeagueMatches(leagueKey, { full });
+  // API 读路径只用 Tab（快）；全量轮次由 sync 写入 MySQL
+  const all = await fetchDongqiuLeagueMatches(leagueKey, { full: false });
   return sortMatches(filterMatchesByRange(all, dateRange, options));
 }
 
